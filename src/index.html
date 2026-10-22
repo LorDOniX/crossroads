@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Přednost v jízdě – křižovatky</title>
+  </head>
+  <body>
+    <header id="hud">
+      <div class="hud-left">
+        <span class="hud-title">Přednost v jízdě</span>
+        <span class="hud-sub"><span id="hud-round"></span> · <span id="hud-type"></span></span>
+      </div>
+      <div class="hud-stats">
+        <span>Zbývá <b id="hud-left">30</b></span>
+        <span class="good">Správně <b id="hud-good">0</b></span>
+        <span class="bad">Špatně <b id="hud-bad">0</b></span>
+      </div>
+      <div id="hud-score" class="hud-score">– %</div>
+    </header>
+    <main>
+      <div id="scene-wrap">
+        <svg id="scene" viewBox="0 0 1000 1000" role="img" aria-label="Křižovatka při pohledu shora"></svg>
+      </div>
+      <p id="info"></p>
+    </main>
+    <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div id="modal-box" class="modal-box">
+        <h2 id="modal-title"></h2>
+        <div id="modal-body"></div>
+        <button id="modal-btn" type="button"></button>
+      </div>
+    </div>
+  </body>
+</html>
