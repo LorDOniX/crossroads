@@ -1,6 +1,6 @@
 import { ALL_ARMS } from './geometry';
-import { allConflictsDecided, hasAnyYield, isSolvable } from './rules';
-import type { Arm, Intersection, Scenario, Vehicle, VehicleKind } from './types';
+import { allConflictsDecided, hasAnyYield, hasGreen, isSolvable } from './rules';
+import type { Arm, Intersection, Scenario, SignalPlan, Vehicle, VehicleKind } from './types';
 
 export type IntersectionType =
   | 'x-equal'
@@ -8,7 +8,10 @@ export type IntersectionType =
   | 'x-main-straight'
   | 'x-main-bent'
   | 't-main-straight'
-  | 't-main-bent';
+  | 't-main-bent'
+  | 'x-signals'
+  | 't-signals'
+  | 'x-signals-blinking';
 
 export interface TestItem {
   type: IntersectionType;
@@ -22,6 +25,9 @@ const TYPES: readonly IntersectionType[] = [
   'x-main-bent',
   't-main-straight',
   't-main-bent',
+  'x-signals',
+  't-signals',
+  'x-signals-blinking',
 ];
 
 const LABELS: Record<IntersectionType, string> = {
@@ -31,6 +37,9 @@ const LABELS: Record<IntersectionType, string> = {
   'x-main-bent': 'Lomená hlavní silnice',
   't-main-straight': 'Křižovatka T, hlavní vede rovně',
   't-main-bent': 'Křižovatka T, lomená hlavní',
+  'x-signals': 'Křižovatka řízená semafory',
+  't-signals': 'Křižovatka T řízená semafory',
+  'x-signals-blinking': 'Semafory blikají žlutě',
 };
 
 const PALETTE: readonly { color: string; adj: string }[] = [
@@ -79,18 +88,33 @@ function armPairs(arms: readonly Arm[], gap: 1 | 2): Arm[][] {
   return result;
 }
 
+function buildSignalPlan(arms: readonly Arm[], blinking: boolean): SignalPlan {
+  const through = armPairs(arms, 2);
+  const phases =
+    through.length === 2 ? shuffle(through) : [through[0], arms.filter((a) => !through[0].includes(a))];
+  return { blinking, phases, rightArrows: blinking ? [] : arms.filter(() => chance(0.35)) };
+}
+
 function buildIntersection(type: IntersectionType): Intersection {
   // the player always comes from the south, so that arm never goes missing
   const missing: Arm | null = type.startsWith('t-') ? pick<Arm>([1, 2, 3]) : null;
   const arms = ALL_ARMS.filter((a) => a !== missing);
   let mainArms: Arm[] = [];
+  let signals: SignalPlan | null = null;
   if (type.endsWith('main-straight')) mainArms = pick(armPairs(arms, 2));
   if (type.endsWith('main-bent')) mainArms = pick(armPairs(arms, 1));
+  if (type.includes('signals')) {
+    const blinking = type.endsWith('blinking');
+    // signs for the case the lights are off; while lit they are overridden
+    if (blinking || chance(0.5)) mainArms = pick([...armPairs(arms, 2), ...armPairs(arms, 1)]);
+    signals = buildSignalPlan(arms, blinking);
+  }
   return {
     arms,
     mainArms,
     yieldSign: chance(0.3) ? 'stop' : 'giveWay',
     tramLine: null,
+    signals,
     label: LABELS[type],
   };
 }
@@ -137,18 +161,28 @@ function buildVehicles(inter: Intersection, withTram: boolean): Vehicle[] {
   return vehicles;
 }
 
+/** Random phase in which at least one vehicle has green. */
+function pickStartPhase(inter: Intersection, vehicles: readonly Vehicle[]): number {
+  if (!inter.signals || inter.signals.blinking) return 0;
+  const candidates = inter.signals.phases
+    .map((_, i) => i)
+    .filter((i) => vehicles.some((v) => hasGreen(inter, v.from, i)));
+  return pick(candidates);
+}
+
 export function generateScenario(item: TestItem): Scenario {
   for (let attempt = 0; attempt < 500; attempt++) {
     const intersection = buildIntersection(item.type);
     const vehicles = buildVehicles(intersection, item.withTram);
     const tram = vehicles.find((v) => v.kind === 'tram');
     intersection.tramLine = tram ? [tram.from, tram.to] : null;
+    const startPhase = pickStartPhase(intersection, vehicles);
     if (
       allConflictsDecided(intersection, vehicles) &&
-      isSolvable(intersection, vehicles) &&
-      hasAnyYield(intersection, vehicles)
+      isSolvable(intersection, vehicles, startPhase) &&
+      hasAnyYield(intersection, vehicles, startPhase)
     ) {
-      return { intersection, vehicles };
+      return { intersection, vehicles, startPhase };
     }
   }
   if (!item.withTram) throw new Error(`Nelze vygenerovat křižovatku typu ${item.type}`);
@@ -159,8 +193,7 @@ export function generateScenario(item: TestItem): Scenario {
 export function buildTestSequence(total: number): TestItem[] {
   const items: TestItem[] = [];
   for (let i = 0; i < total; i++) {
-    const nth = Math.floor(i / TYPES.length);
-    items.push({ type: TYPES[i % TYPES.length], withTram: nth % 5 < 2 });
+    items.push({ type: TYPES[i % TYPES.length], withTram: i % 5 === 1 || i % 5 === 3 });
   }
   return shuffle(items);
 }

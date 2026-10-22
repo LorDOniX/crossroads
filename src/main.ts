@@ -1,7 +1,7 @@
 import './styles.css';
 import { buildTestSequence, generateScenario, type TestItem } from './generator';
-import { animateTo, renderScene, type VehicleView } from './render';
-import { blockersOf, freeVehicles, type Blocker } from './rules';
+import { animateTo, changeSignals, renderScene, type VehicleView } from './render';
+import { blockersOf, freeVehicles, settlePhase, type Blocker } from './rules';
 import type { Intersection, Scenario, Vehicle } from './types';
 
 const TOTAL = 30;
@@ -38,6 +38,7 @@ let scenario: Scenario | null = null;
 let remaining: Vehicle[] = [];
 let passed: Vehicle[] = [];
 let views = new Map<string, VehicleView>();
+let phase = 0;
 let busy = false;
 
 const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
@@ -106,14 +107,16 @@ function setBusy(value: boolean): void {
 }
 
 function blockerText(inter: Intersection, v: Vehicle, b: Blocker): string {
-  const other = capitalize(b.other.name);
-  if (b.reason === 'main') return `${other} – jede po hlavní pozemní komunikaci.`;
-  if (b.reason === 'right') return `${other} – přijíždí zprava.`;
+  if (!b.other) return v.isPlayer ? 'Svítí ti červená, musíš počkat na zelenou.' : 'Svítí mu červená, musí počkat na zelenou.';
+  const prefix = `${v.isPlayer ? 'Musíš' : 'Musí'} dát přednost: ${b.other.name}`;
   const subject = v.isPlayer ? 'ty odbočuješ' : 'toto vozidlo odbočuje';
-  const bothOnMain = inter.mainArms.includes(v.from) && inter.mainArms.includes(b.other.from);
+  if (b.reason === 'main') return `${prefix} – jede po hlavní pozemní komunikaci.`;
+  if (b.reason === 'right') return `${prefix} – přijíždí zprava.`;
+  if (b.reason === 'arrow') return `${prefix} – jede na zelenou a ${subject} vpravo jen na doplňkovou šipku.`;
+  const bothOnMain = !inter.signals && inter.mainArms.includes(v.from) && inter.mainArms.includes(b.other.from);
   return bothOnMain
-    ? `${other} – jede v protisměru po hlavní silnici a ${subject} z hlavní vlevo.`
-    : `${other} – jede v protisměru a ${subject} vlevo.`;
+    ? `${prefix} – jede v protisměru po hlavní silnici a ${subject} z hlavní vlevo.`
+    : `${prefix} – jede v protisměru a ${subject} vlevo.`;
 }
 
 const nextButtonLabel = (): string => (round + 1 >= TOTAL ? 'Zobrazit výsledek' : 'Další křižovatka');
@@ -137,7 +140,7 @@ function showRoundError(inter: Intersection, vehicle: Vehicle, blockers: Blocker
     kind: 'bad',
     title: 'Chyba!',
     blocks: [
-      { text: `${who} teď ještě nesmí jet, musí dát přednost:` },
+      { text: `${who} teď ještě nesmí jet:` },
       { items: blockers.map((b) => blockerText(inter, vehicle, b)) },
       { text: `Správná volba teď: ${allowed.map((v) => v.name).join(' nebo ')}.` },
       { text: `Počet chyb: ${bad}` },
@@ -169,7 +172,7 @@ async function handlePick(id: string): Promise<void> {
   setBusy(true);
 
   const inter = scenario.intersection;
-  const allowed = freeVehicles(inter, remaining);
+  const allowed = freeVehicles(inter, remaining, phase);
   if (allowed.includes(vehicle)) {
     await animateTo(view, view.path.length, 'in');
     view.node.remove();
@@ -177,6 +180,11 @@ async function handlePick(id: string): Promise<void> {
     passed.push(vehicle);
     updateInfo();
     if (remaining.length) {
+      const next = settlePhase(inter, remaining, phase);
+      if (next !== phase) {
+        await changeSignals(scene, inter, phase, next);
+        phase = next;
+      }
       setBusy(false);
       return;
     }
@@ -186,7 +194,7 @@ async function handlePick(id: string): Promise<void> {
     return;
   }
 
-  const blockers = blockersOf(inter, vehicle, remaining);
+  const blockers = blockersOf(inter, vehicle, remaining, phase);
   const { sEntry, sExit } = view.path;
   await animateTo(view, sEntry + (sExit - sEntry) * 0.4, 'inOut');
   view.inner.classList.add('crash');
@@ -199,6 +207,7 @@ function startRound(): void {
   scenario = generateScenario(sequence[round]);
   remaining = [...scenario.vehicles];
   passed = [];
+  phase = scenario.startPhase;
   views = renderScene(scene, scenario, (id) => void handlePick(id));
   setBusy(false);
   updateHud();
@@ -229,6 +238,7 @@ showModal({
   blocks: [
     { text: 'Na každé křižovatce klikej postupně na vozidla v pořadí, v jakém smějí projet – včetně svého červeného auta.' },
     { text: 'Sleduj směrovky, dopravní značky a tvar hlavní silnice. Jezdí se vpravo, tramvaj se řídí stejnými pravidly jako ostatní.' },
+    { text: 'Světla semaforů mají přednost před značkami; blikají-li žlutě, řídíš se značkami. Zelená doplňková šipka vpravo dovoluje odbočit i na červenou, ale s předností vozidel, která mají zelenou.' },
     { text: 'Při první chybě se křižovatka vyhodnotí jako špatně a pokračuješ další.' },
   ],
   button: 'Začít',

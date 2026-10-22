@@ -144,6 +144,49 @@ main {
   }
 }
 
+.lamp {
+  fill: #2b2b2b;
+}
+
+.lamp.red.on {
+  fill: #ff3b30;
+}
+
+.lamp.yellow.on {
+  fill: #ffcc00;
+}
+
+.lamp.green.on {
+  fill: #34c759;
+}
+
+.lamp.yellow.blink {
+  animation: lamp-blink 1.1s infinite;
+}
+
+@keyframes lamp-blink {
+  0%,
+  49% {
+    fill: #ffcc00;
+  }
+  50%,
+  100% {
+    fill: #2b2b2b;
+  }
+}
+
+.lamp.arrow {
+  fill: none;
+  stroke: #2b2b2b;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lamp.arrow.on {
+  stroke: #34c759;
+}
+
 .vehicle .body.crash {
   animation: shake 0.45s;
   filter: drop-shadow(0 0 10px #ff2a2a);

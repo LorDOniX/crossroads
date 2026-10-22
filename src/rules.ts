@@ -7,14 +7,20 @@
  * 1. hlavní × vedlejší pozemní komunikace (§ 22 odst. 1),
  * 2. odbočování vlevo vůči protijedoucím včetně tramvají (§ 21 odst. 5),
  * 3. pravidlo pravé ruky (§ 22 odst. 2) – platí i pro tramvaj.
+ *
+ * Na křižovatce řízené semafory mají světla přednost před značkami (§ 76 odst. 6): jet smí jen
+ * vozidla se zelenou (při odbočování vlevo dávají přednost protijedoucím, § 70 odst. 2 písm. c),
+ * na doplňkovou šipku vpravo i při červené, ale s předností vozidel ve volném směru (písm. g).
+ * Blikající žlutá znamená neřízenou křižovatku – platí značky (písm. d).
  */
 import { turnOf } from './geometry';
 import type { Arm, Intersection, Turn, Vehicle } from './types';
 
-export type YieldReason = 'main' | 'right' | 'oncoming';
+export type YieldReason = 'main' | 'right' | 'oncoming' | 'red' | 'arrow';
 
 export interface Blocker {
-  other: Vehicle;
+  /** Null when the vehicle waits for the signal, not for another vehicle. */
+  other: Vehicle | null;
   reason: YieldReason;
 }
 
@@ -65,23 +71,68 @@ export function yieldReason(inter: Intersection, v: Vehicle, w: Vehicle): YieldR
   return ccw(v.from, w.from, 4) === 1 ? 'right' : null;
 }
 
-export function blockersOf(inter: Intersection, v: Vehicle, remaining: readonly Vehicle[]): Blocker[] {
+export function blockersOf(
+  inter: Intersection,
+  v: Vehicle,
+  remaining: readonly Vehicle[],
+  phase: number,
+): Blocker[] {
+  const active = signalsActive(inter);
+  const arrow = active && onRightArrow(inter, v, phase);
+  if (active && !arrow && !hasGreen(inter, v.from, phase)) return [{ other: null, reason: 'red' }];
   const result: Blocker[] = [];
   for (const w of remaining) {
-    if (w === v) continue;
-    const reason = yieldReason(inter, v, w);
+    if (w === v || !pathsConflict(v, w)) continue;
+    let reason: YieldReason | null;
+    if (!active) reason = yieldReason(inter, v, w);
+    else if (arrow) reason = hasGreen(inter, w.from, phase) ? 'arrow' : null;
+    else reason = hasGreen(inter, w.from, phase) ? greenYieldReason(v, w) : null;
     if (reason) result.push({ other: w, reason });
   }
   return result;
 }
 
+const signalsActive = (inter: Intersection): boolean => inter.signals !== null && !inter.signals.blinking;
+
+export const hasGreen = (inter: Intersection, arm: Arm, phase: number): boolean =>
+  inter.signals?.phases[phase].includes(arm) ?? false;
+
+function onRightArrow(inter: Intersection, v: Vehicle, phase: number): boolean {
+  return (
+    !hasGreen(inter, v.from, phase) &&
+    (inter.signals?.rightArrows.includes(v.from) ?? false) &&
+    turnOf(v.from, v.to) === 'right'
+  );
+}
+
+/** Between vehicles on green the signs do not apply, only the turning rules. */
+function greenYieldReason(v: Vehicle, w: Vehicle): YieldReason | null {
+  if (ccw(v.from, w.from, 4) === 2) {
+    return turnOf(v.from, v.to) === 'left' && turnOf(w.from, w.to) !== 'left' ? 'oncoming' : null;
+  }
+  return ccw(v.from, w.from, 4) === 1 ? 'right' : null;
+}
+
+/** Keeps `phase` while someone on green still waits, otherwise switches to the next phase with traffic. */
+export function settlePhase(inter: Intersection, remaining: readonly Vehicle[], phase: number): number {
+  if (!signalsActive(inter) || !inter.signals) return phase;
+  const count = inter.signals.phases.length;
+  for (let k = 0; k < count; k++) {
+    const p = (phase + k) % count;
+    if (remaining.some((v) => hasGreen(inter, v.from, p))) return p;
+  }
+  return phase;
+}
+
 /** Vehicles that may enter the junction now. */
-export function freeVehicles(inter: Intersection, remaining: readonly Vehicle[]): Vehicle[] {
-  return remaining.filter((v) => blockersOf(inter, v, remaining).length === 0);
+export function freeVehicles(inter: Intersection, remaining: readonly Vehicle[], phase: number): Vehicle[] {
+  return remaining.filter((v) => blockersOf(inter, v, remaining, phase).length === 0);
 }
 
 /** Every conflicting pair must have exactly one vehicle that gives way. */
 export function allConflictsDecided(inter: Intersection, vehicles: readonly Vehicle[]): boolean {
+  // green phases pair only opposite arms, which the left-turn rule always decides
+  if (signalsActive(inter)) return true;
   for (let i = 0; i < vehicles.length; i++) {
     for (let j = i + 1; j < vehicles.length; j++) {
       const v = vehicles[i];
@@ -94,16 +145,18 @@ export function allConflictsDecided(inter: Intersection, vehicles: readonly Vehi
 }
 
 /** False for a deadlock (e.g. four cars going straight at an equal intersection). */
-export function isSolvable(inter: Intersection, vehicles: readonly Vehicle[]): boolean {
+export function isSolvable(inter: Intersection, vehicles: readonly Vehicle[], phase: number): boolean {
   let remaining = [...vehicles];
+  let current = phase;
   while (remaining.length) {
-    const free = freeVehicles(inter, remaining);
+    current = settlePhase(inter, remaining, current);
+    const free = freeVehicles(inter, remaining, current);
     if (!free.length) return false;
     remaining = remaining.filter((v) => !free.includes(v));
   }
   return true;
 }
 
-export function hasAnyYield(inter: Intersection, vehicles: readonly Vehicle[]): boolean {
-  return vehicles.some((v) => blockersOf(inter, v, vehicles).length > 0);
+export function hasAnyYield(inter: Intersection, vehicles: readonly Vehicle[], phase: number): boolean {
+  return vehicles.some((v) => blockersOf(inter, v, vehicles, phase).length > 0);
 }

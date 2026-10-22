@@ -116,6 +116,13 @@ function drawMarkings(inter: Intersection): SVGGElement {
             : { stroke: MARKING, 'stroke-width': 7, 'stroke-dasharray': '10 7' },
         ),
       );
+    } else if (inter.signals) {
+      g.appendChild(
+        line(armPoint(arm, STOP_DIST - 4, 2), armPoint(arm, STOP_DIST - 4, HALF_ROAD - 2), {
+          stroke: MARKING,
+          'stroke-width': 8,
+        }),
+      );
     }
   }
   return g;
@@ -214,6 +221,65 @@ function drawSigns(inter: Intersection): SVGGElement {
   return g;
 }
 
+type LampKind = 'red' | 'yellow' | 'green' | 'arrow';
+type LampState = 'off' | 'on' | 'blink';
+type ArmLamps = Partial<Record<LampKind, LampState>>;
+
+function signalHead(arm: Arm, withArrow: boolean): SVGGElement {
+  const pos = armPoint(arm, STOP_DIST + 18, HALF_ROAD + 30);
+  const lamp = (kind: LampKind, cy: number): SVGCircleElement =>
+    svgEl('circle', { class: `lamp ${kind}`, cx: 0, cy, r: 6.5, 'data-arm': arm, 'data-lamp': kind });
+  const head = svgEl('g', { transform: `translate(${pos.x} ${pos.y}) rotate(${approachAngle(arm)})` }, [
+    svgEl('rect', { x: -9, y: -26, width: 18, height: 52, rx: 4, fill: '#1b1b1b', stroke: '#000', 'stroke-width': 1.5 }),
+    lamp('red', -16),
+    lamp('yellow', 0),
+    lamp('green', 16),
+  ]);
+  if (withArrow) {
+    head.append(
+      svgEl('rect', { x: 10, y: 6, width: 20, height: 20, rx: 3, fill: '#1b1b1b', stroke: '#000', 'stroke-width': 1.5 }),
+      svgEl('path', { class: 'lamp arrow', d: 'M14 16 H26 M21 11 L26 16 L21 21', 'data-arm': arm, 'data-lamp': 'arrow' }),
+    );
+  }
+  return head;
+}
+
+function applyLamps(svg: SVGSVGElement, state: (arm: Arm) => ArmLamps): void {
+  for (const lamp of svg.querySelectorAll<SVGElement>('[data-lamp]')) {
+    const value = state(Number(lamp.dataset.arm) as Arm)[lamp.dataset.lamp as LampKind] ?? 'off';
+    lamp.classList.toggle('on', value === 'on');
+    lamp.classList.toggle('blink', value === 'blink');
+  }
+}
+
+export function showSignals(svg: SVGSVGElement, inter: Intersection, phase: number): void {
+  const plan = inter.signals;
+  if (!plan) return;
+  applyLamps(svg, (arm) => {
+    if (plan.blinking) return { yellow: 'blink' };
+    if (plan.phases[phase].includes(arm)) return { green: 'on' };
+    return { red: 'on', arrow: 'on' };
+  });
+}
+
+/** Amber (or red + amber) interval between two phases. */
+export function changeSignals(svg: SVGSVGElement, inter: Intersection, from: number, to: number): Promise<void> {
+  const plan = inter.signals;
+  if (!plan) return Promise.resolve();
+  applyLamps(svg, (arm) => {
+    const was = plan.phases[from].includes(arm);
+    const will = plan.phases[to].includes(arm);
+    if (was) return will ? { green: 'on' } : { yellow: 'on' };
+    return will ? { red: 'on', yellow: 'on' } : { red: 'on' };
+  });
+  return new Promise((resolve) =>
+    setTimeout(() => {
+      showSignals(svg, inter, to);
+      resolve();
+    }, 1100),
+  );
+}
+
 function placeVehicle(view: VehicleView): void {
   const p = pointAt(view.path, view.s);
   view.node.setAttribute('transform', `translate(${p.x.toFixed(2)} ${p.y.toFixed(2)}) rotate(${p.angle.toFixed(2)})`);
@@ -230,6 +296,11 @@ export function renderScene(svg: SVGSVGElement, scenario: Scenario, onPick: (id:
   );
   if (inter.tramLine) svg.appendChild(drawTramLine(inter.tramLine));
   if (inter.mainArms.length === 2) svg.appendChild(drawSigns(inter));
+  if (inter.signals) {
+    const plan = inter.signals;
+    svg.appendChild(svgEl('g', {}, inter.arms.map((arm) => signalHead(arm, plan.rightArrows.includes(arm)))));
+    showSignals(svg, inter, scenario.startPhase);
+  }
 
   const layer = svgEl('g');
   svg.appendChild(layer);
