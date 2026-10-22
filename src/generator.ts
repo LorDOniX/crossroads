@@ -1,6 +1,7 @@
 import { ALL_ARMS } from './geometry';
-import { allConflictsDecided, hasAnyYield, hasGreen, isSolvable } from './rules';
-import type { Arm, Intersection, Scenario, SignalPlan, Vehicle, VehicleKind } from './types';
+import { Rng, deriveSeed } from './random';
+import { allConflictsDecided, controlOf, hasAnyYield, isSolvable, settlePhase } from './rules';
+import type { Arm, Intersection, Scenario, SignalPhase, SignalPlan, Vehicle } from './types';
 
 export type IntersectionType =
   | 'x-equal'
@@ -11,14 +12,20 @@ export type IntersectionType =
   | 't-main-bent'
   | 'x-signals'
   | 't-signals'
-  | 'x-signals-blinking';
+  | 'x-signals-blinking'
+  | 'x-police'
+  | 'roundabout';
+
+export type Extra = 'none' | 'column' | 'emergency' | 'pedestrian';
 
 export interface TestItem {
   type: IntersectionType;
-  withTram: boolean;
+  seed: number;
+  tram: boolean;
+  extra: Extra;
 }
 
-const TYPES: readonly IntersectionType[] = [
+export const TYPES: readonly IntersectionType[] = [
   'x-equal',
   't-equal',
   'x-main-straight',
@@ -28,9 +35,11 @@ const TYPES: readonly IntersectionType[] = [
   'x-signals',
   't-signals',
   'x-signals-blinking',
+  'x-police',
+  'roundabout',
 ];
 
-const LABELS: Record<IntersectionType, string> = {
+export const LABELS: Record<IntersectionType, string> = {
   'x-equal': 'Rovnocenná křižovatka',
   't-equal': 'Rovnocenná křižovatka tvaru T',
   'x-main-straight': 'Hlavní silnice vede rovně',
@@ -40,6 +49,8 @@ const LABELS: Record<IntersectionType, string> = {
   'x-signals': 'Křižovatka řízená semafory',
   't-signals': 'Křižovatka T řízená semafory',
   'x-signals-blinking': 'Semafory blikají žlutě',
+  'x-police': 'Křižovatku řídí policista',
+  roundabout: 'Kruhový objezd',
 };
 
 const PALETTE: readonly { color: string; adj: string }[] = [
@@ -53,29 +64,19 @@ const PALETTE: readonly { color: string; adj: string }[] = [
   { color: '#7b3fb5', adj: 'fialové' },
 ];
 
+const JACKETS = ['#e94e77', '#3f88c5', '#f49d37', '#7bc67b'];
 const PLAYER_COLOR = '#d62828';
 const TRAM_COLOR = '#efe6cc';
+const AMBULANCE_COLOR = '#f6f6f0';
 
-const rand = (n: number): number => Math.floor(Math.random() * n);
-const pick = <T>(items: readonly T[]): T => items[rand(items.length)];
-const chance = (p: number): boolean => Math.random() < p;
+const isActiveControl = (type: IntersectionType): boolean =>
+  type === 'x-signals' || type === 't-signals' || type === 'x-police';
 
-function shuffle<T>(items: readonly T[]): T[] {
-  const a = [...items];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = rand(i + 1);
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function weighted<T>(items: readonly T[], weights: readonly number[]): T {
-  let r = Math.random() * weights.reduce((sum, w) => sum + w, 0);
-  for (let i = 0; i < items.length; i++) {
-    r -= weights[i];
-    if (r < 0) return items[i];
-  }
-  return items[items.length - 1];
+/** Features that make sense for the given intersection type. */
+function allowedExtras(type: IntersectionType): Extra[] {
+  if (type === 'roundabout') return ['none'];
+  if (isActiveControl(type)) return ['none', 'column', 'emergency'];
+  return ['none', 'column', 'emergency', 'pedestrian'];
 }
 
 /** Pairs of present arms that are adjacent (gap 1) or opposite (gap 2). */
@@ -88,112 +89,193 @@ function armPairs(arms: readonly Arm[], gap: 1 | 2): Arm[][] {
   return result;
 }
 
-function buildSignalPlan(arms: readonly Arm[], blinking: boolean): SignalPlan {
+function buildSignalPlan(rng: Rng, arms: readonly Arm[], blinking: boolean): SignalPlan {
   const through = armPairs(arms, 2);
-  const phases =
-    through.length === 2 ? shuffle(through) : [through[0], arms.filter((a) => !through[0].includes(a))];
-  return { blinking, phases, rightArrows: blinking ? [] : arms.filter(() => chance(0.35)) };
+  const axes = through.length === 2 ? rng.shuffle(through) : [through[0], arms.filter((a) => !through[0].includes(a))];
+  const phases: SignalPhase[] = axes.map((a) => ({ arms: a, leftOnly: false }));
+  if (!blinking && through.length === 2 && rng.chance(0.4)) phases.unshift({ arms: axes[0], leftOnly: true });
+  return { blinking, phases, rightArrows: blinking ? [] : arms.filter(() => rng.chance(0.35)) };
 }
 
-function buildIntersection(type: IntersectionType): Intersection {
+function buildIntersection(rng: Rng, item: TestItem): Intersection {
+  const { type } = item;
   // the player always comes from the south, so that arm never goes missing
-  const missing: Arm | null = type.startsWith('t-') ? pick<Arm>([1, 2, 3]) : null;
+  const tShaped = type.startsWith('t-') || (type === 'roundabout' && rng.chance(0.25));
+  const missing: Arm | null = tShaped ? rng.pick<Arm>([1, 2, 3]) : null;
   const arms = ALL_ARMS.filter((a) => a !== missing);
-  let mainArms: Arm[] = [];
-  let signals: SignalPlan | null = null;
-  if (type.endsWith('main-straight')) mainArms = pick(armPairs(arms, 2));
-  if (type.endsWith('main-bent')) mainArms = pick(armPairs(arms, 1));
+  const inter: Intersection = {
+    arms,
+    mainArms: [],
+    yieldSign: rng.chance(0.3) ? 'stop' : 'giveWay',
+    tramLine: null,
+    signals: null,
+    police: null,
+    roundabout: null,
+    crosswalks: [],
+    label: LABELS[type],
+  };
+  const anyMainRoad = (): Arm[] => rng.pick([...armPairs(arms, 2), ...armPairs(arms, 1)]);
+  if (type.endsWith('main-straight')) inter.mainArms = rng.pick(armPairs(arms, 2));
+  if (type.endsWith('main-bent')) inter.mainArms = rng.pick(armPairs(arms, 1));
   if (type.includes('signals')) {
     const blinking = type.endsWith('blinking');
     // signs for the case the lights are off; while lit they are overridden
-    if (blinking || chance(0.5)) mainArms = pick([...armPairs(arms, 2), ...armPairs(arms, 1)]);
-    signals = buildSignalPlan(arms, blinking);
+    if (blinking || rng.chance(0.5)) inter.mainArms = anyMainRoad();
+    inter.signals = buildSignalPlan(rng, arms, blinking);
   }
-  return {
-    arms,
-    mainArms,
-    yieldSign: chance(0.3) ? 'stop' : 'giveWay',
-    tramLine: null,
-    signals,
-    label: LABELS[type],
-  };
+  if (type === 'x-police') {
+    if (rng.chance(0.5)) inter.mainArms = anyMainRoad();
+    inter.police = { phases: rng.shuffle(armPairs(arms, 2)) };
+  }
+  if (type === 'roundabout') inter.roundabout = { yieldOnEntry: rng.chance(0.7) };
+  if (item.extra === 'pedestrian') inter.crosswalks = rng.shuffle(arms).slice(0, 1 + rng.int(2));
+  return inter;
 }
 
-function pickExit(inter: Intersection, from: Arm, preferStraight: boolean): Arm {
+function pickExit(rng: Rng, inter: Intersection, from: Arm, preferStraight: boolean): Arm {
   const exits = inter.arms.filter((a) => a !== from);
   const straight = ((from + 2) % 4) as Arm;
-  if (preferStraight && exits.includes(straight) && chance(0.6)) return straight;
-  return pick(exits);
+  if (preferStraight && exits.includes(straight) && rng.chance(0.6)) return straight;
+  return rng.pick(exits);
 }
 
-function buildVehicles(inter: Intersection, withTram: boolean): Vehicle[] {
-  const others = inter.arms.filter((a) => a !== 0);
-  const count =
-    others.length === 3 ? weighted([1, 2, 3], [0.2, 0.45, 0.35]) : weighted([1, 2], [0.35, 0.65]);
-  const occupied = shuffle(others).slice(0, count);
-  const tramArm = withTram ? pick(occupied) : null;
-  const colors = shuffle(PALETTE);
-
-  const vehicles: Vehicle[] = [
-    {
-      id: 'player',
+function buildVehicles(rng: Rng, inter: Intersection, item: TestItem): Vehicle[] {
+  const colors = rng.shuffle(PALETTE);
+  let colorIndex = 0;
+  let idCounter = 0;
+  const vehicles: Vehicle[] = [];
+  const add = (partial: Partial<Vehicle> & Pick<Vehicle, 'from' | 'to'>): Vehicle => {
+    const vehicle: Vehicle = {
+      id: `v${idCounter++}`,
       kind: 'car',
-      color: PLAYER_COLOR,
-      name: 'tvoje červené auto',
-      from: 0,
-      to: pickExit(inter, 0, false),
-      isPlayer: true,
-    },
-  ];
-  occupied.forEach((from, i) => {
-    const kind: VehicleKind = from === tramArm ? 'tram' : chance(0.3) ? 'truck' : 'car';
-    const paint = colors[i];
-    vehicles.push({
-      id: `v${i}`,
-      kind,
-      color: kind === 'tram' ? TRAM_COLOR : paint.color,
-      name: kind === 'tram' ? 'tramvaj' : kind === 'truck' ? `${paint.adj} nákladní auto` : `${paint.adj} auto`,
-      from,
-      to: pickExit(inter, from, kind === 'tram'),
+      color: '',
+      name: '',
       isPlayer: false,
-    });
+      queue: 0,
+      beacons: false,
+      circulating: false,
+      walkDir: 1,
+      ...partial,
+    };
+    if (!vehicle.name) {
+      const paint = colors[colorIndex++ % colors.length];
+      if (vehicle.kind !== 'truck' && rng.chance(0.3)) vehicle.kind = 'truck';
+      vehicle.color = paint.color;
+      vehicle.name = vehicle.kind === 'truck' ? `${paint.adj} nákladní auto` : `${paint.adj} auto`;
+    }
+    vehicles.push(vehicle);
+    return vehicle;
+  };
+
+  const player = add({
+    id: 'player',
+    from: 0,
+    to: pickExit(rng, inter, 0, false),
+    isPlayer: true,
+    color: PLAYER_COLOR,
+    name: 'tvoje červené auto',
   });
+  const others = inter.arms.filter((a) => a !== 0);
+  const count = others.length === 3 ? rng.weighted([1, 2, 3], [0.2, 0.45, 0.35]) : rng.weighted([1, 2], [0.35, 0.65]);
+  for (const from of rng.shuffle(others).slice(0, count)) add({ from, to: pickExit(rng, inter, from, false) });
+
+  if (inter.roundabout) {
+    const circulating = rng.weighted([0, 1, 2], [0.2, 0.5, 0.3]);
+    for (const from of rng.shuffle(ALL_ARMS).slice(0, circulating)) {
+      add({ from, to: rng.pick(inter.arms), circulating: true });
+    }
+    return vehicles;
+  }
+
+  if (item.tram) {
+    const from = rng.pick(inter.arms);
+    add({ from, to: pickExit(rng, inter, from, true), kind: 'tram', color: TRAM_COLOR, name: 'tramvaj' });
+  }
+
+  const fronts = vehicles.filter((v) => v.kind !== 'tram');
+  if (item.extra === 'column') {
+    const target = rng.pick(fronts);
+    if (target.isPlayer && rng.chance(0.4)) {
+      add({ from: 0, to: pickExit(rng, inter, 0, false) });
+      player.queue = 1;
+    } else {
+      add({ from: target.from, to: pickExit(rng, inter, target.from, false), queue: 1 });
+    }
+  }
+  if (item.extra === 'emergency') {
+    const candidates = fronts.filter((v) => !v.isPlayer && v.queue === 0);
+    if (candidates.length) {
+      const target = rng.pick(candidates);
+      Object.assign(target, { kind: 'ambulance', color: AMBULANCE_COLOR, name: 'sanitka', beacons: rng.chance(0.75) });
+    }
+  }
+  if (item.extra === 'pedestrian' && inter.crosswalks.length) {
+    add({
+      kind: 'pedestrian',
+      from: 0,
+      to: rng.pick(inter.crosswalks),
+      color: rng.pick(JACKETS),
+      name: 'chodec',
+      walkDir: rng.chance(0.5) ? 1 : -1,
+    });
+  }
   return vehicles;
 }
 
-/** Random phase in which at least one vehicle has green. */
-function pickStartPhase(inter: Intersection, vehicles: readonly Vehicle[]): number {
-  if (!inter.signals || inter.signals.blinking) return 0;
-  const candidates = inter.signals.phases
-    .map((_, i) => i)
-    .filter((i) => vehicles.some((v) => hasGreen(inter, v.from, i)));
-  return pick(candidates);
+function difficultyOf(inter: Intersection, vehicles: readonly Vehicle[]): number {
+  const tram = vehicles.find((v) => v.kind === 'tram');
+  const features = [
+    vehicles.some((v) => v.queue > 0),
+    vehicles.some((v) => v.kind === 'ambulance'),
+    vehicles.some((v) => v.kind === 'pedestrian'),
+    tram !== undefined && vehicles.some((v) => v !== tram && v.from === tram.from),
+    inter.police !== null,
+    inter.roundabout !== null && !inter.roundabout.yieldOnEntry,
+    inter.signals?.blinking === true,
+    inter.signals?.phases.some((p) => p.leftOnly) === true,
+    (inter.signals?.rightArrows.length ?? 0) > 0,
+  ];
+  return Math.min(3, 1 + features.filter(Boolean).length);
 }
 
 export function generateScenario(item: TestItem): Scenario {
-  for (let attempt = 0; attempt < 500; attempt++) {
-    const intersection = buildIntersection(item.type);
-    const vehicles = buildVehicles(intersection, item.withTram);
+  const rng = new Rng(item.seed);
+  for (let attempt = 0; attempt < 600; attempt++) {
+    const intersection = buildIntersection(rng, item);
+    const vehicles = buildVehicles(rng, intersection, item);
     const tram = vehicles.find((v) => v.kind === 'tram');
     intersection.tramLine = tram ? [tram.from, tram.to] : null;
-    const startPhase = pickStartPhase(intersection, vehicles);
+    const control = controlOf(intersection);
+    const startPhase = control ? settlePhase(intersection, vehicles, rng.int(control.phases.length)) : 0;
     if (
       allConflictsDecided(intersection, vehicles) &&
       isSolvable(intersection, vehicles, startPhase) &&
       hasAnyYield(intersection, vehicles, startPhase)
     ) {
-      return { intersection, vehicles, startPhase };
+      return { intersection, vehicles, startPhase, difficulty: difficultyOf(intersection, vehicles) };
     }
   }
-  if (!item.withTram) throw new Error(`Nelze vygenerovat křižovatku typu ${item.type}`);
-  return generateScenario({ ...item, withTram: false });
+  if (!item.tram && item.extra === 'none') throw new Error(`Nelze vygenerovat křižovatku typu ${item.type}`);
+  return generateScenario({ ...item, tram: false, extra: 'none' });
+}
+
+function makeItem(rng: Rng, type: IntersectionType, seed: number, tram: boolean): TestItem {
+  const extra = rng.pick(allowedExtras(type).flatMap((e): Extra[] => (e === 'none' ? [e, e] : [e])));
+  return { type, seed, tram: tram && type !== 'roundabout', extra };
 }
 
 /** Test of `total` intersections spread evenly over all types, roughly 40 % of them with a tram. */
-export function buildTestSequence(total: number): TestItem[] {
+export function buildTestSequence(seed: number, total: number): TestItem[] {
+  const rng = new Rng(seed);
   const items: TestItem[] = [];
   for (let i = 0; i < total; i++) {
-    items.push({ type: TYPES[i % TYPES.length], withTram: i % 5 === 1 || i % 5 === 3 });
+    items.push(makeItem(rng, TYPES[i % TYPES.length], deriveSeed(seed, i), i % 5 === 1 || i % 5 === 3));
   }
-  return shuffle(items);
+  return rng.shuffle(items);
+}
+
+/** Random intersection for practice; `type` null means any. */
+export function practiceItem(seed: number, type: IntersectionType | null): TestItem {
+  const rng = new Rng(seed);
+  return makeItem(rng, type ?? rng.pick(TYPES), seed, rng.chance(0.4));
 }

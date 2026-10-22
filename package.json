@@ -3,19 +3,36 @@
   "version": "1.0.0",
   "private": true,
   "description": "Hra na určování přednosti v jízdě na křižovatkách",
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "scripts": {
     "start": "webpack serve --mode development",
-    "build": "webpack --mode production",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc --noEmit && webpack --mode production",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write \"src/**/*.{ts,css,html}\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.{ts,css,html}\" \"tests/**/*.ts\""
   },
   "devDependencies": {
+    "@eslint/js": "^9.20.0",
     "css-loader": "^7.1.2",
+    "eslint": "^9.20.0",
+    "eslint-config-prettier": "^10.0.1",
     "html-webpack-plugin": "^5.6.3",
+    "prettier": "^3.5.0",
     "style-loader": "^4.0.0",
     "ts-loader": "^9.5.2",
     "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0",
+    "vitest": "^5.0.5",
     "webpack": "^5.98.0",
     "webpack-cli": "^6.0.1",
-    "webpack-dev-server": "^5.2.0"
+    "webpack-dev-server": "^6.1.0"
+  },
+  "allowScripts": {
+    "fsevents": false
   }
 }
