@@ -1,6 +1,6 @@
-import { ALL_ARMS } from './geometry';
+import { ALL_ARMS, ringPassesThrough } from './geometry';
 import { Rng, deriveSeed } from './random';
-import { allConflictsDecided, controlOf, hasAnyYield, isSolvable, settlePhase } from './rules';
+import { allConflictsDecided, controlOf, hasAnyYield, isSolvable, settlePhase, solutionSteps } from './rules';
 import type { Arm, Intersection, Scenario, SignalPhase, SignalPlan, Vehicle } from './types';
 
 export type IntersectionType =
@@ -238,6 +238,14 @@ function difficultyOf(inter: Intersection, vehicles: readonly Vehicle[]): number
   return Math.min(3, 1 + features.filter(Boolean).length);
 }
 
+/** Nobody may drive through a circulating vehicle that is still standing on the ring. */
+function ringClear(inter: Intersection, vehicles: Vehicle[], phase: number): boolean {
+  if (!inter.roundabout) return true;
+  const steps = solutionSteps(inter, vehicles, phase) ?? [];
+  const stepOf = (v: Vehicle): number => steps.findIndex((group) => group.includes(v));
+  return vehicles.every((v) => vehicles.every((w) => stepOf(v) >= stepOf(w) || !ringPassesThrough(v, w)));
+}
+
 export function generateScenario(item: TestItem): Scenario {
   const rng = new Rng(item.seed);
   for (let attempt = 0; attempt < 600; attempt++) {
@@ -250,7 +258,8 @@ export function generateScenario(item: TestItem): Scenario {
     if (
       allConflictsDecided(intersection, vehicles) &&
       isSolvable(intersection, vehicles, startPhase) &&
-      hasAnyYield(intersection, vehicles, startPhase)
+      hasAnyYield(intersection, vehicles, startPhase) &&
+      ringClear(intersection, vehicles, startPhase)
     ) {
       return { intersection, vehicles, startPhase, difficulty: difficultyOf(intersection, vehicles) };
     }

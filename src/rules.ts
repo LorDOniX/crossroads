@@ -7,7 +7,7 @@
  *
  * Pořadí rozhodování:
  * - vozidlo v koloně čeká na vozidlo před sebou,
- * - vozidlu s majákem dávají přednost všichni (§ 41 odst. 7),
+ * - vozidlu s majákem dávají přednost všichni, jejichž dráhu kříží (§ 41 odst. 7),
  * - chodci na přechodu mají přednost před vozidly, která přechod přejíždějí (§ 5 odst. 2 písm. f, g),
  *   sami dávají přednost tramvaji (§ 54 odst. 3),
  * - kruhový objezd se značkou „Dej přednost“: přednost mají vozidla na kruhu (§ 22 odst. 5),
@@ -170,7 +170,7 @@ export function blockersOf(inter: Intersection, v: Vehicle, remaining: readonly 
   const others = remaining.filter((w) => w !== v);
   if (isPedestrian(v)) {
     return others.flatMap((w): Blocker[] => {
-      if (w.beacons) return [{ other: w, reason: 'emergency' }];
+      if (w.beacons && crossesCrosswalk(w, v.to)) return [{ other: w, reason: 'emergency' }];
       if (isTram(w) && crossesCrosswalk(w, v.to)) return [{ other: w, reason: 'tramFirst' }];
       return [];
     });
@@ -178,7 +178,8 @@ export function blockersOf(inter: Intersection, v: Vehicle, remaining: readonly 
   const ahead = others.find((w) => sameColumn(v, w) && w.queue < v.queue);
   if (ahead) return [{ other: ahead, reason: 'ahead' }];
   if (v.beacons) return [];
-  const emergency = others.filter((w) => w.beacons);
+  // only those whose path the emergency vehicle crosses have to let it go first
+  const emergency = others.filter((w) => w.beacons && (inter.roundabout !== null || pathsConflict(v, w)));
   if (emergency.length) return emergency.map((w) => ({ other: w, reason: 'emergency' }));
 
   const result: Blocker[] = [];
@@ -257,22 +258,22 @@ export function allConflictsDecided(inter: Intersection, vehicles: readonly Vehi
 
 /** False for a deadlock (e.g. four cars going straight at an equal intersection). */
 export function isSolvable(inter: Intersection, vehicles: readonly Vehicle[], phase: number): boolean {
-  return solutionOrder(inter, vehicles, phase) !== null;
+  return solutionSteps(inter, vehicles, phase) !== null;
 }
 
-/** One valid order of departure, or null for a deadlock. */
-export function solutionOrder(inter: Intersection, vehicles: readonly Vehicle[], phase: number): Vehicle[] | null {
+/** Groups of road users that go at the same time, or null for a deadlock. */
+export function solutionSteps(inter: Intersection, vehicles: readonly Vehicle[], phase: number): Vehicle[][] | null {
   let remaining = [...vehicles];
   let current = phase;
-  const order: Vehicle[] = [];
+  const steps: Vehicle[][] = [];
   while (remaining.length) {
     current = settlePhase(inter, remaining, current);
     const free = freeVehicles(inter, remaining, current);
     if (!free.length) return null;
-    order.push(free[0]);
-    remaining = remaining.filter((v) => v !== free[0]);
+    steps.push(free);
+    remaining = remaining.filter((v) => !free.includes(v));
   }
-  return order;
+  return steps;
 }
 
 export function hasAnyYield(inter: Intersection, vehicles: readonly Vehicle[], phase: number): boolean {

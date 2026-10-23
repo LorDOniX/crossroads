@@ -205,16 +205,33 @@ function pushArc(raw: Vec[], fromDeg: number, toDeg: number): void {
   for (let i = 1; i <= steps; i++) raw.push(ringPoint(fromDeg + ((toDeg - fromDeg) * i) / steps));
 }
 
+/** Angles where the road user joins and leaves the ring (end < start). */
+function ringArc(v: Vehicle): { start: number; end: number } {
+  const start = RING_THETA[v.from] - (v.circulating ? 45 : RING_ENTRY_OFFSET);
+  let end = RING_THETA[v.to] + RING_ENTRY_OFFSET;
+  while (end > start - 5) end -= 360;
+  return { start, end };
+}
+
+/** Half of a car's length as an angle on the ring, plus a gap. */
+const RING_CLEARANCE = 30;
+
+/** `v` would drive through the place where the circulating `w` stands. */
+export function ringPassesThrough(v: Vehicle, w: Vehicle): boolean {
+  if (!w.circulating || v === w) return false;
+  const { start, end } = ringArc(v);
+  const d = (((start - (RING_THETA[w.from] - 45)) % 360) + 360) % 360;
+  return d <= start - end + RING_CLEARANCE || d >= 360 - RING_CLEARANCE;
+}
+
 function ringPath(v: Vehicle, waitDist: number): VehiclePath {
   const lat = LANE / 2;
   const hOut = ARM_DIR[v.to];
-  const exitDeg = RING_THETA[v.to] + RING_ENTRY_OFFSET;
   const raw: Vec[] = [];
   let waitIndex: number;
   let entryIndex: number;
-  let startDeg: number;
+  const { start: startDeg, end: endDeg } = ringArc(v);
   if (v.circulating) {
-    startDeg = RING_THETA[v.from] - 45;
     raw.push(ringPoint(startDeg + 60));
     pushArc(raw, startDeg + 60, startDeg);
     waitIndex = raw.length - 1;
@@ -222,15 +239,12 @@ function ringPath(v: Vehicle, waitDist: number): VehiclePath {
   } else {
     const hIn = neg(ARM_DIR[v.from]);
     const p0 = armPoint(v.from, RING_OUT + 4, lat);
-    startDeg = RING_THETA[v.from] - RING_ENTRY_OFFSET;
     const q = ringPoint(startDeg);
     raw.push(armPoint(v.from, waitDist + PRE_PATH, lat), armPoint(v.from, waitDist, lat), p0);
     pushCubic(raw, p0, add(p0, scale(hIn, RING_HANDLE)), add(q, scale(ringTangent(startDeg), -RING_HANDLE)), q, 12);
     waitIndex = 1;
     entryIndex = 2;
   }
-  let endDeg = exitDeg;
-  while (endDeg > startDeg - 5) endDeg -= 360;
   pushArc(raw, startDeg, endDeg);
   const exitIndex = raw.length - 1;
   const r = ringPoint(endDeg);

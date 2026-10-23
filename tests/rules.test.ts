@@ -110,7 +110,7 @@ describe('tramvaj, kolona, sanitka, chodci', () => {
     expect(reasons(junction(), rear, [front, rear])).toEqual(['ahead:front']);
   });
 
-  it('vozidlu s majákem dávají přednost všichni, bez majáku je to běžné auto', () => {
+  it('vozidlu s majákem dávají přednost ti, jejichž dráhu kříží, bez majáku je to běžné auto', () => {
     const inter = junction({ mainArms: [0, 2] });
     const ambulance = road('amb', 1, 3, { kind: 'ambulance', beacons: true });
     const car = road('car', 0, 2);
@@ -118,6 +118,8 @@ describe('tramvaj, kolona, sanitka, chodci', () => {
     expect(freeVehicles(inter, [car, ambulance], 0)).toEqual([ambulance]);
     const silent = { ...ambulance, beacons: false };
     expect(reasons(inter, silent, [car, silent])).toEqual(['main:car']);
+    const turning = road('right', 0, 1);
+    expect(freeVehicles(inter, [turning, ambulance], 0)).toEqual([turning, ambulance]);
   });
 
   it('chodec na přechodu má přednost, sám ji dává tramvaji', () => {

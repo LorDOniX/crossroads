@@ -493,10 +493,11 @@ export function renderScene(svg: SVGSVGElement, scenario: Scenario, onPick: (id:
     const sections = bodies.map((body) => svgEl('g', {}, [body]));
     const title = svgEl('title');
     title.textContent = vehicle.name;
-    const node = svgEl('g', { class: 'vehicle', tabindex: 0, role: 'button', 'aria-label': describe(vehicle) }, [
-      ...sections,
-      title,
-    ]);
+    const node = svgEl(
+      'g',
+      { class: 'vehicle', tabindex: 0, role: 'button', 'aria-pressed': 'false', 'aria-label': describe(vehicle) },
+      [...sections, title],
+    );
     node.addEventListener('click', () => onPick(vehicle.id));
     node.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;

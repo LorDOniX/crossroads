@@ -123,7 +123,7 @@ main {
 }
 
 #scene-wrap {
-  width: min(96vw, calc(100vh - var(--hud-h) - 80px));
+  width: min(96vw, calc(100vh - var(--hud-h) - 96px));
   aspect-ratio: 1 / 1;
 }
 
@@ -136,12 +136,30 @@ main {
   user-select: none;
 }
 
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  width: min(96vw, calc(100vh - var(--hud-h) - 96px));
+  margin-top: 8px;
+}
+
 #info {
+  flex: 1;
   min-height: 20px;
-  margin: 8px 0 0;
+  margin: 0;
   font-size: 14px;
   color: #c7d2dc;
-  text-align: center;
+}
+
+#btn-go {
+  min-width: 110px;
+}
+
+#btn-go:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .vehicle {
@@ -283,6 +301,24 @@ main {
 
 .vehicle:focus-visible .body {
   filter: drop-shadow(0 0 5px #ffb300) drop-shadow(0 0 5px #ffb300);
+}
+
+.vehicle.selected .body {
+  filter: drop-shadow(0 0 5px #3db8ff) drop-shadow(0 0 9px #3db8ff);
+}
+
+.vehicle.missed .body {
+  animation: missed 0.9s infinite;
+}
+
+@keyframes missed {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 3px #5fd47a);
+  }
+  50% {
+    filter: drop-shadow(0 0 10px #5fd47a) drop-shadow(0 0 10px #5fd47a);
+  }
 }
 
 .vehicle .body.crash {
@@ -480,6 +516,10 @@ main {
     width: 100%;
   }
 
+  .controls {
+    width: 100%;
+  }
+
   #info {
     font-size: 13px;
   }
@@ -491,5 +531,9 @@ main {
   .btn {
     flex: 1 1 auto;
     min-height: 44px;
+  }
+
+  #btn-go {
+    flex: 0 0 auto;
   }
 }

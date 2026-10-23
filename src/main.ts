@@ -27,6 +27,7 @@ function byId<T extends Element = HTMLElement>(id: string): T {
 
 const scene = byId<SVGSVGElement>('scene');
 const info = byId('info');
+const goButton = byId<HTMLButtonElement>('btn-go');
 const hud = {
   round: byId('hud-round'),
   type: byId('hud-type'),
@@ -72,6 +73,12 @@ let timeLeft = 0;
 
 const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 const noop = (): void => undefined;
+
+/** „A, B a C“ */
+function joinNames(vehicles: readonly Vehicle[]): string {
+  const names = vehicles.map((v) => v.name);
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} a ${names[names.length - 1]}` : (names[0] ?? '');
+}
 
 interface ModalBlock {
   text?: string;
@@ -152,8 +159,9 @@ function updateHud(): void {
 function updateInfo(): void {
   const passed = player?.passed ?? [];
   info.textContent = passed.length
-    ? `Projelo: ${passed.map((v, i) => `${i + 1}. ${v.name}`).join(', ')}`
-    : 'Klikej na vozidla (nebo je vyber klávesou Tab a potvrď Enterem) v pořadí, v jakém projedou – včetně svého červeného auta.';
+    ? `Projelo: ${passed.map((group, i) => `${i + 1}. ${joinNames(group)}`).join('; ')}`
+    : 'Označ všechny, kdo teď smějí jet současně (i své červené auto), a potvrď „Jeďte“. Pak další skupinu.';
+  goButton.disabled = !player?.canConfirm;
 }
 
 function updateSoundButton(): void {
@@ -223,20 +231,30 @@ function nextLabel(): string {
 }
 
 function mistakeBlocks(m: Mistake, inter: Intersection): ModalBlock[] {
-  const allowed = `Správná volba: ${m.allowed.map((v) => v.name).join(' nebo ')}.`;
-  if (!m.vehicle) return [{ text: 'Čas vypršel.' }, { text: allowed }];
-  const vehicle = m.vehicle;
-  const who = vehicle.isPlayer ? 'Tvoje auto' : capitalize(vehicle.name);
-  return [
-    { text: `${who} teď ještě nesmí jet:` },
-    { items: m.blockers.map((b) => blockerText(inter, vehicle, b)) },
-    { text: allowed },
-  ];
+  const allowed =
+    m.allowed.length > 1
+      ? `Teď smějí jet současně: ${joinNames(m.allowed)}.`
+      : `Teď smí jet jen: ${joinNames(m.allowed)}.`;
+  const blocks: ModalBlock[] = [];
+  if (m.timedOut) blocks.push({ text: 'Čas vypršel.' });
+  for (const { vehicle, blockers } of m.wrong) {
+    const who = vehicle.isPlayer ? 'Tvoje auto' : capitalize(vehicle.name);
+    blocks.push(
+      { text: `${who} teď ještě nesmí jet:` },
+      { items: blockers.map((b) => blockerText(inter, vehicle, b)) },
+    );
+  }
+  if (!m.timedOut && !m.wrong.length) {
+    blocks.push({ text: `Zapomněl(a) jsi: ${joinNames(m.missing)} – smí jet zároveň s vybranými.` });
+  }
+  blocks.push({ text: allowed });
+  return blocks;
 }
 
 function finishRound(correct: boolean, mistake: Mistake | null): void {
   if (!game || !player) return;
   stopTimer();
+  goButton.disabled = true;
   const current = game;
   const scenario = player.scenario;
   if (correct) current.good++;
@@ -250,7 +268,7 @@ function finishRound(correct: boolean, mistake: Mistake | null): void {
   else sounds.error();
 
   if (current.mode === 'exam') {
-    info.textContent = correct ? 'Správně.' : mistake?.vehicle ? 'Chyba.' : 'Čas vypršel.';
+    info.textContent = correct ? 'Správně.' : mistake?.timedOut ? 'Čas vypršel.' : 'Chyba.';
     const round = player;
     window.setTimeout(() => player === round && nextRound(), 1200);
     return;
@@ -261,7 +279,7 @@ function finishRound(correct: boolean, mistake: Mistake | null): void {
       title: 'Správně!',
       blocks: [
         { text: 'Všichni projeli ve správném pořadí:' },
-        { items: player.passed.map((v) => capitalize(v.name)), ordered: true },
+        { items: player.passed.map((group) => capitalize(joinNames(group))), ordered: true },
       ],
       actions: [{ label: nextLabel(), primary: true, onClick: nextRound }],
     });
@@ -371,7 +389,7 @@ async function replay(record: RoundRecord): Promise<void> {
   showModal({
     kind: 'info',
     title: 'Správné pořadí',
-    blocks: [{ items: player.passed.map((v) => capitalize(v.name)), ordered: true }],
+    blocks: [{ items: player.passed.map((group) => capitalize(joinNames(group))), ordered: true }],
     actions: [{ label: 'Zpět na výsledky', primary: true, onClick: showResult }],
   });
 }
@@ -475,7 +493,7 @@ function showMenu(): void {
     title: 'Přednost v jízdě',
     blocks: [
       {
-        text: 'Na každé křižovatce klikej postupně na účastníky provozu v pořadí, v jakém smějí projet – včetně svého červeného auta.',
+        text: 'Na každé křižovatce označ všechny účastníky provozu, kteří smějí jet současně (včetně svého červeného auta), a potvrď „Jeďte“. Pak pokračuj další skupinou, dokud křižovatkou neprojedou všichni.',
       },
       {
         items: [
@@ -508,6 +526,7 @@ hud.sound.addEventListener('click', () => {
   updateSoundButton();
 });
 hud.menu.addEventListener('click', showMenu);
+goButton.addEventListener('click', () => void player?.confirm());
 updateSoundButton();
 
 const params = new URLSearchParams(location.search);

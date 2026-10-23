@@ -1,7 +1,8 @@
 # Přednost v jízdě – křižovatky
 
 Webová hra na procvičování přednosti v jízdě podle zákona č. 361/2000 Sb. Na náhodně vygenerované křižovatce
-(pohled shora) klikáš na vozidla v pořadí, v jakém smí projet – včetně svého červeného auta.
+(pohled shora) označíš všechny účastníky provozu, kteří smějí jet současně – včetně svého červeného auta – a potvrdíš
+tlačítkem „Jeďte“. Pak pokračuješ další skupinou, dokud křižovatkou neprojedou všichni.
 
 ## Herní režimy
 
@@ -22,7 +23,7 @@ Test lze sdílet odkazem – zadání se generuje deterministicky ze seedu: `?mo
 - řízení policistou, kruhové objezdy (s i bez „Dej přednost v jízdě!“ na vjezdu),
 - osobní a nákladní auta, tramvaje, sanitka s majákem, chodci na přechodech, kolony vozidel.
 
-Ovládání myší, dotykem i klávesnicí (Tab + Enter/mezerník). Veškerá grafika je SVG generované v kódu, žádné externí
+Ovládání myší, dotykem i klávesnicí (Tab + Enter/mezerník označí vozidlo, pak Tab na „Jeďte“). Veškerá grafika je SVG generované v kódu, žádné externí
 obrázky.
 
 ## Vývoj
@@ -50,7 +51,7 @@ Obsah `dist/` stačí nahrát na libovolný statický hosting.
 | `src/geometry.ts`  | rozměry silnic, jízdní pruhy, trajektorie vozidel                    |
 | `src/render.ts`    | vykreslení scény (silnice, značky, semafory) a animace               |
 | `src/sprites.ts`   | SVG vozidel, chodců a policisty                                      |
-| `src/round.ts`     | průběh jednoho kola (klikání, kontrola pořadí, přehrání řešení)      |
+| `src/round.ts`     | průběh jednoho kola (výběr skupiny, kontrola, přehrání řešení)       |
 | `src/main.ts`      | herní smyčka, HUD, dialogy, menu, výsledky                           |
 | `src/storage.ts`   | statistiky v `localStorage`                                          |
 | `src/audio.ts`     | zvukové efekty (Web Audio)                                           |
