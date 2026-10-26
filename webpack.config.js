@@ -6,6 +6,8 @@ module.exports = (_env, argv) => ({
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'bundle.[contenthash].js',
+    // build pro https://app.makuderovi.cz/crossroads/ (npm run upload), dev server zůstává na http://localhost:8080/
+    publicPath: argv.mode === 'production' ? '/crossroads/' : '/',
     clean: true,
   },
   resolve: {

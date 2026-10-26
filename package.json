@@ -14,10 +14,12 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,css,html}\" \"tests/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.{ts,css,html}\" \"tests/**/*.ts\""
+    "format:check": "prettier --check \"src/**/*.{ts,css,html}\" \"tests/**/*.ts\"",
+    "upload": "npm run build && tsx scripts/upload.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",
+    "basic-ftp": "^6.2.3",
     "css-loader": "^7.1.2",
     "eslint": "^9.20.0",
     "eslint-config-prettier": "^10.0.1",
@@ -25,6 +27,7 @@
     "prettier": "^3.5.0",
     "style-loader": "^4.0.0",
     "ts-loader": "^9.5.2",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.24.0",
     "vitest": "^5.0.5",
