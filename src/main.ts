@@ -5,14 +5,31 @@ import {
   TYPES,
   buildTestSequence,
   generateScenario,
+  generateScenarioFor,
   practiceItem,
   type IntersectionType,
   type TestItem,
 } from './generator';
 import { deriveSeed, randomSeed } from './random';
 import { RoundPlayer, type Mistake } from './round';
+import type { RouteDrive } from './route/drive';
+import { findJunctions, type RouteJunction } from './route/junctions';
+import type { JunctionState, RouteMap } from './route/mapView';
+import { fetchOsm } from './route/osm';
+import { createRoute, type Route } from './route/route';
 import type { Blocker } from './rules';
-import { loadStats, recordGame, recordRound, resetStats, type Mode } from './storage';
+import {
+  loadRouteData,
+  loadStats,
+  recordGame,
+  recordRound,
+  resetStats,
+  routeCacheKey,
+  saveRouteData,
+  loadSettings,
+  saveSettings,
+  type Mode,
+} from './storage';
 import type { Intersection, Scenario, Vehicle } from './types';
 
 const TOTAL = 30;
@@ -26,6 +43,13 @@ function byId<T extends Element = HTMLElement>(id: string): T {
 }
 
 const scene = byId<SVGSVGElement>('scene');
+const mainView = document.querySelector('main') as HTMLElement;
+const mapView = byId('map-view');
+const mapElement = byId('map');
+const mapStatus = byId('map-status');
+const driveButton = byId<HTMLButtonElement>('btn-drive');
+const speedSelect = byId<HTMLSelectElement>('map-speed');
+const retryButton = byId<HTMLButtonElement>('btn-osm-retry');
 const info = byId('info');
 const goButton = byId<HTMLButtonElement>('btn-go');
 const hud = {
@@ -66,8 +90,25 @@ interface Game {
   records: RoundRecord[];
 }
 
+interface Ride {
+  mirek: string;
+  route: Route;
+  view: RouteMap;
+  drive: RouteDrive | null;
+  junctions: RouteJunction[];
+  states: Map<RouteJunction, JunctionState>;
+  seed: number;
+  /** Junctions offered so far, also the index of the next situation seed. */
+  passes: number;
+  good: number;
+  bad: number;
+  abort: AbortController;
+}
+
 let game: Game | null = null;
 let player: RoundPlayer | null = null;
+let ride: Ride | null = null;
+let settings = loadSettings();
 let timer: number | undefined;
 let timeLeft = 0;
 
@@ -158,9 +199,13 @@ function updateHud(): void {
 
 function updateInfo(): void {
   const passed = player?.passed ?? [];
+  const multi = player?.isMultiSelect ?? settings.multiSelect;
   info.textContent = passed.length
     ? `Projelo: ${passed.map((group, i) => `${i + 1}. ${joinNames(group)}`).join('; ')}`
-    : 'Označ všechny, kdo teď smějí jet současně (i své červené auto), a potvrď „Jeďte“. Pak další skupinu.';
+    : multi
+      ? 'Označ všechny, kdo teď smějí jet současně (i své červené auto), a potvrď „Jeďte“. Pak další skupinu.'
+      : 'Klikni na toho, kdo teď smí jet (i na své červené auto). Když jich smí jet víc, začni kýmkoli z nich.';
+  goButton.classList.toggle('hidden', !multi);
   goButton.disabled = !player?.canConfirm;
 }
 
@@ -308,11 +353,16 @@ function startRound(): void {
       ? practiceItem(deriveSeed(game.seed, game.round), game.practiceType)
       : game.items[game.round];
   // callbacks of a replaced round must not touch the new one
-  const round: RoundPlayer = new RoundPlayer(scene, generateScenario(item), {
-    onProgress: () => player === round && updateInfo(),
-    onComplete: () => player === round && finishRound(true, null),
-    onMistake: (mistake) => player === round && finishRound(false, mistake),
-  });
+  const round: RoundPlayer = new RoundPlayer(
+    scene,
+    generateScenario(item),
+    {
+      onProgress: () => player === round && updateInfo(),
+      onComplete: () => player === round && finishRound(true, null),
+      onMistake: (mistake) => player === round && finishRound(false, mistake),
+    },
+    settings.multiSelect,
+  );
   player = round;
   updateHud();
   updateInfo();
@@ -334,6 +384,7 @@ function shareUrl(current: Game): string {
 }
 
 function startGame(mode: Mode, seed: number, practiceType: IntersectionType | null = null): void {
+  closeMap();
   game = {
     mode,
     seed,
@@ -348,6 +399,203 @@ function startGame(mode: Mode, seed: number, practiceType: IntersectionType | nu
   };
   if (mode !== 'practice') history.replaceState(null, '', shareUrl(game));
   startRound();
+}
+
+/** `junction`: the intersection as a dialog over the map. */
+function showView(view: 'scene' | 'map' | 'junction'): void {
+  mainView.classList.toggle('hidden', view === 'map');
+  mainView.classList.toggle('overlay', view === 'junction');
+  mapView.classList.toggle('hidden', view === 'scene');
+}
+
+function closeMap(): void {
+  if (ride) {
+    ride.abort.abort();
+    ride.drive?.remove();
+    ride.view.remove();
+    ride = null;
+  }
+  showView('scene');
+}
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+function updateRideHud(label = ''): void {
+  if (!ride) return;
+  const done = ride.good + ride.bad;
+  hud.round.textContent = `Jízda po trase · ${(ride.route.length / 1000).toFixed(1)} km`;
+  hud.type.textContent = label;
+  hud.left.textContent = String(ride.drive?.remaining ?? 0);
+  hud.good.textContent = String(ride.good);
+  hud.bad.textContent = String(ride.bad);
+  hud.score.textContent = done ? `${Math.round((ride.good / done) * 100)} %` : '– %';
+}
+
+function updateDriveButton(): void {
+  const drive = ride?.drive;
+  driveButton.disabled = !drive || drive.finished || mainView.classList.contains('overlay');
+  driveButton.textContent = drive?.isRunning ? 'Pauza' : drive?.started ? 'Pokračovat' : 'Start';
+}
+
+function showRideJunctions(current: Ride): void {
+  void current.view.showJunctions(
+    current.junctions.map((j) => ({ center: j.center, state: current.states.get(j) ?? 'pending' })),
+  );
+}
+
+function resumeRide(current: Ride): void {
+  if (ride !== current) return;
+  showView('map');
+  updateRideHud();
+  current.drive?.start();
+  updateDriveButton();
+}
+
+function finishRideRound(
+  current: Ride,
+  round: RoundPlayer,
+  junction: RouteJunction,
+  correct: boolean,
+  mistake: Mistake | null,
+): void {
+  goButton.disabled = true;
+  if (correct) current.good++;
+  else current.bad++;
+  current.states.set(junction, correct ? 'ok' : 'bad');
+  showRideJunctions(current);
+  updateRideHud(junction.label);
+  if (correct) sounds.success();
+  else sounds.error();
+  const note: ModalBlock[] = junction.estimated
+    ? [{ text: 'Přednost je tu odhadnutá podle třídy silnic – v OpenStreetMap chybí dopravní značky.' }]
+    : [];
+  const resume: ModalAction = { label: 'Pokračovat v jízdě', primary: true, onClick: () => resumeRide(current) };
+  if (correct) {
+    showModal({
+      kind: 'ok',
+      title: 'Správně!',
+      blocks: [
+        { text: 'Všichni projeli ve správném pořadí:' },
+        { items: round.passed.map((group) => capitalize(joinNames(group))), ordered: true },
+        ...note,
+      ],
+      actions: [resume],
+    });
+    return;
+  }
+  const errorDialog = (): void =>
+    showModal({
+      kind: 'bad',
+      title: 'Chyba!',
+      blocks: [...mistakeBlocks(mistake as Mistake, round.scenario.intersection), ...note],
+      actions: [{ label: 'Ukázat správné řešení', onClick: () => void round.playSolution().then(errorDialog) }, resume],
+    });
+  errorDialog();
+}
+
+function openJunction(current: Ride, junction: RouteJunction): void {
+  let scenario: Scenario;
+  try {
+    scenario = generateScenarioFor(junction.fixed, deriveSeed(current.seed, current.passes++));
+  } catch (error) {
+    mapStatus.textContent = `Křižovatku ${junction.label} jsem přeskočil: ${errorText(error)}`;
+    resumeRide(current);
+    return;
+  }
+  showView('junction');
+  updateDriveButton();
+  // callbacks of a replaced round must not touch the new one
+  const round: RoundPlayer = new RoundPlayer(
+    scene,
+    scenario,
+    {
+      onProgress: () => player === round && updateInfo(),
+      onComplete: () => player === round && finishRideRound(current, round, junction, true, null),
+      onMistake: (mistake) => player === round && finishRideRound(current, round, junction, false, mistake),
+    },
+    settings.multiSelect,
+  );
+  player = round;
+  updateRideHud(junction.label);
+  updateInfo();
+}
+
+function finishRide(current: Ride): void {
+  updateDriveButton();
+  showModal({
+    kind: 'info',
+    title: 'Trasa dokončena',
+    blocks: [{ text: `Křižovatek: ${current.good + current.bad}, správně ${current.good}, chyb ${current.bad}.` }],
+    actions: [
+      { label: 'Projet znovu', primary: true, onClick: () => void openMap(current.mirek) },
+      { label: 'Menu', onClick: showMenu },
+    ],
+  });
+}
+
+async function loadJunctions(current: Ride): Promise<void> {
+  retryButton.classList.add('hidden');
+  const cacheKey = routeCacheKey(current.mirek);
+  let junctions = loadRouteData<RouteJunction[]>(cacheKey);
+  if (!junctions) {
+    mapStatus.textContent = 'Hledám křižovatky v OpenStreetMap… Auto už může jet.';
+    try {
+      junctions = findJunctions(current.route, await fetchOsm(current.route, current.abort.signal));
+      saveRouteData(cacheKey, junctions);
+    } catch (error) {
+      if (ride !== current) return;
+      mapStatus.textContent = `Křižovatky se nepodařilo načíst: ${errorText(error)}.`;
+      retryButton.classList.remove('hidden');
+      return;
+    }
+  }
+  if (ride !== current) return;
+  current.junctions = junctions;
+  current.drive?.setJunctions(junctions);
+  mapStatus.textContent = `Křižovatek na trase: ${junctions.length}`;
+  showRideJunctions(current);
+  updateRideHud();
+}
+
+async function openMap(mirek: string): Promise<void> {
+  try {
+    const route = createRoute(mirek.trim());
+    const [{ RouteMap }, { RouteDrive }] = await Promise.all([import('./route/mapView'), import('./route/drive')]);
+    closeMap();
+    stopTimer();
+    game = null;
+    player = null;
+    showView('map');
+    const current: Ride = {
+      mirek: mirek.trim(),
+      route,
+      view: new RouteMap(mapElement, route),
+      drive: null,
+      junctions: [],
+      states: new Map(),
+      seed: randomSeed(),
+      passes: 0,
+      good: 0,
+      bad: 0,
+      abort: new AbortController(),
+    };
+    ride = current;
+    current.drive = new RouteDrive(current.view, route, {
+      onJunction: (junction) => ride === current && openJunction(current, junction),
+      onFinish: () => ride === current && finishRide(current),
+    });
+    current.drive.speedFactor = Number(speedSelect.value);
+    updateRideHud();
+    updateDriveButton();
+    await loadJunctions(current);
+  } catch (error) {
+    showModal({
+      kind: 'bad',
+      title: 'Trasu nelze zobrazit',
+      blocks: [{ text: errorText(error) }],
+      actions: [{ label: 'Zpět do menu', primary: true, onClick: showMenu }],
+    });
+  }
 }
 
 function resultPercent(current: Game): number {
@@ -383,7 +631,12 @@ function reviewList(current: Game): HTMLElement {
 
 async function replay(record: RoundRecord): Promise<void> {
   hideModal();
-  player = new RoundPlayer(scene, record.scenario, { onProgress: updateInfo, onComplete: noop, onMistake: noop });
+  player = new RoundPlayer(
+    scene,
+    record.scenario,
+    { onProgress: updateInfo, onComplete: noop, onMistake: noop },
+    settings.multiSelect,
+  );
   updateHud();
   await player.playSolution();
   showModal({
@@ -457,7 +710,12 @@ function statsBlock(): HTMLElement {
   return box;
 }
 
-function menuForm(): { element: HTMLElement; seed: () => number; type: () => IntersectionType | null } {
+function menuForm(): {
+  element: HTMLElement;
+  seed: () => number;
+  type: () => IntersectionType | null;
+  route: () => string;
+} {
   const element = document.createElement('div');
   element.className = 'menu-form';
   const typeLabel = document.createElement('label');
@@ -474,7 +732,27 @@ function menuForm(): { element: HTMLElement; seed: () => number; type: () => Int
   input.maxLength = 10;
   input.placeholder = 'např. 482913';
   seedLabel.appendChild(input);
-  element.append(typeLabel, seedLabel);
+  const routeLabel = document.createElement('label');
+  routeLabel.textContent = 'Trasa ve formátu Mirek: ';
+  const routeInput = document.createElement('textarea');
+  routeInput.rows = 2;
+  routeInput.spellcheck = false;
+  routeInput.placeholder = 'např. 9mMiWxT9l3LhKN63…';
+  routeLabel.appendChild(routeInput);
+  const multiLabel = document.createElement('label');
+  multiLabel.className = 'switch';
+  const multiInput = document.createElement('input');
+  multiInput.type = 'checkbox';
+  multiInput.setAttribute('role', 'switch');
+  multiInput.checked = settings.multiSelect;
+  multiInput.addEventListener('change', () => {
+    settings = { ...settings, multiSelect: multiInput.checked };
+    saveSettings(settings);
+    if (player && !player.finished) player.setMultiSelect(settings.multiSelect);
+    updateInfo();
+  });
+  multiLabel.append(multiInput, 'Více možností současně');
+  element.append(multiLabel, typeLabel, seedLabel, routeLabel);
   return {
     element,
     seed: () => {
@@ -482,18 +760,21 @@ function menuForm(): { element: HTMLElement; seed: () => number; type: () => Int
       return Number.isFinite(value) && value > 0 ? value : randomSeed();
     },
     type: () => (select.value ? (select.value as IntersectionType) : null),
+    route: () => routeInput.value,
   };
 }
 
 function showMenu(): void {
   stopTimer();
+  ride?.drive?.pause();
+  updateDriveButton();
   const form = menuForm();
   showModal({
     kind: 'info',
     title: 'Přednost v jízdě',
     blocks: [
       {
-        text: 'Na každé křižovatce označ všechny účastníky provozu, kteří smějí jet současně (včetně svého červeného auta), a potvrď „Jeďte“. Pak pokračuj další skupinou, dokud křižovatkou neprojedou všichni.',
+        text: 'Na každé křižovatce urči, v jakém pořadí projedou všichni účastníci provozu včetně tvého červeného auta: klikni na toho, kdo smí jet. S přepínačem „Více možností současně“ označíš všechny, kdo smějí jet zároveň, a potvrdíš „Jeďte“.',
       },
       {
         items: [
@@ -509,6 +790,8 @@ function showMenu(): void {
       { label: 'Test', primary: true, onClick: () => startGame('test', form.seed()) },
       { label: 'Zkouška nanečisto', onClick: () => startGame('exam', form.seed()) },
       { label: 'Procvičování', onClick: () => startGame('practice', randomSeed(), form.type()) },
+      { label: 'Trasa na mapě', onClick: () => void openMap(form.route()) },
+      ...(ride ? [{ label: 'Zpět na trasu', onClick: noop }] : []),
       {
         label: 'Vymazat statistiky',
         manual: true,
@@ -527,6 +810,18 @@ hud.sound.addEventListener('click', () => {
 });
 hud.menu.addEventListener('click', showMenu);
 goButton.addEventListener('click', () => void player?.confirm());
+driveButton.addEventListener('click', () => {
+  const drive = ride?.drive;
+  if (drive?.isRunning) drive.pause();
+  else drive?.start();
+  updateDriveButton();
+});
+speedSelect.addEventListener('change', () => {
+  if (ride?.drive) ride.drive.speedFactor = Number(speedSelect.value);
+});
+retryButton.addEventListener('click', () => {
+  if (ride) void loadJunctions(ride);
+});
 updateSoundButton();
 
 const params = new URLSearchParams(location.search);
@@ -535,10 +830,11 @@ const urlSeed = Number.parseInt(params.get('seed') ?? '', 10);
 if ((urlMode === 'test' || urlMode === 'exam') && Number.isFinite(urlSeed) && urlSeed > 0) {
   startGame(urlMode, urlSeed);
 } else {
-  player = new RoundPlayer(scene, generateScenario(practiceItem(randomSeed(), null)), {
-    onProgress: noop,
-    onComplete: noop,
-    onMistake: noop,
-  });
+  player = new RoundPlayer(
+    scene,
+    generateScenario(practiceItem(randomSeed(), null)),
+    { onProgress: noop, onComplete: noop, onMistake: noop },
+    settings.multiSelect,
+  );
   showMenu();
 }

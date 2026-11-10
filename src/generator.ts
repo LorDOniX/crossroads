@@ -132,14 +132,26 @@ function buildIntersection(rng: Rng, item: TestItem): Intersection {
   return inter;
 }
 
-function pickExit(rng: Rng, inter: Intersection, from: Arm, preferStraight: boolean): Arm {
-  const exits = inter.arms.filter((a) => a !== from);
+function pickExit(rng: Rng, inter: Intersection, from: Arm, preferStraight: boolean, noExit: readonly Arm[] = []): Arm {
+  const exits = inter.arms.filter((a) => a !== from && !noExit.includes(a));
   const straight = ((from + 2) % 4) as Arm;
   if (preferStraight && exits.includes(straight) && rng.chance(0.6)) return straight;
   return rng.pick(exits);
 }
 
-function buildVehicles(rng: Rng, inter: Intersection, item: TestItem): Vehicle[] {
+interface VehicleOptions {
+  tram: boolean;
+  extra: Extra;
+  playerTo?: Arm;
+  /** One-way arms nobody can arrive from. */
+  noEntry?: readonly Arm[];
+  /** One-way arms nobody can leave by. */
+  noExit?: readonly Arm[];
+}
+
+function buildVehicles(rng: Rng, inter: Intersection, item: VehicleOptions): Vehicle[] {
+  const noEntry = item.noEntry ?? [];
+  const noExit = item.noExit ?? [];
   const colors = rng.shuffle(PALETTE);
   let colorIndex = 0;
   let idCounter = 0;
@@ -170,36 +182,42 @@ function buildVehicles(rng: Rng, inter: Intersection, item: TestItem): Vehicle[]
   const player = add({
     id: 'player',
     from: 0,
-    to: pickExit(rng, inter, 0, false),
+    to: item.playerTo ?? pickExit(rng, inter, 0, false),
     isPlayer: true,
     color: PLAYER_COLOR,
     name: 'tvoje červené auto',
   });
-  const others = inter.arms.filter((a) => a !== 0);
+  const others = inter.arms.filter(
+    (a) => a !== 0 && !noEntry.includes(a) && inter.arms.some((b) => b !== a && !noExit.includes(b)),
+  );
   const count = others.length === 3 ? rng.weighted([1, 2, 3], [0.2, 0.45, 0.35]) : rng.weighted([1, 2], [0.35, 0.65]);
-  for (const from of rng.shuffle(others).slice(0, count)) add({ from, to: pickExit(rng, inter, from, false) });
+  for (const from of rng.shuffle(others).slice(0, count)) add({ from, to: pickExit(rng, inter, from, false, noExit) });
 
   if (inter.roundabout) {
     const circulating = rng.weighted([0, 1, 2], [0.2, 0.5, 0.3]);
+    const exits = inter.arms.filter((a) => !noExit.includes(a));
     for (const from of rng.shuffle(ALL_ARMS).slice(0, circulating)) {
-      add({ from, to: rng.pick(inter.arms), circulating: true });
+      add({ from, to: rng.pick(exits), circulating: true });
     }
     return vehicles;
   }
 
   if (item.tram) {
-    const from = rng.pick(inter.arms);
-    add({ from, to: pickExit(rng, inter, from, true), kind: 'tram', color: TRAM_COLOR, name: 'tramvaj' });
+    // a real junction has its own track, otherwise the tram picks one
+    const line = inter.tramLine;
+    const from = line ? rng.pick(line) : rng.pick(inter.arms);
+    const to = line ? (line[0] === from ? line[1] : line[0]) : pickExit(rng, inter, from, true);
+    add({ from, to, kind: 'tram', color: TRAM_COLOR, name: 'tramvaj' });
   }
 
   const fronts = vehicles.filter((v) => v.kind !== 'tram');
   if (item.extra === 'column') {
     const target = rng.pick(fronts);
     if (target.isPlayer && rng.chance(0.4)) {
-      add({ from: 0, to: pickExit(rng, inter, 0, false) });
+      add({ from: 0, to: pickExit(rng, inter, 0, false, noExit) });
       player.queue = 1;
     } else {
-      add({ from: target.from, to: pickExit(rng, inter, target.from, false), queue: 1 });
+      add({ from: target.from, to: pickExit(rng, inter, target.from, false, noExit), queue: 1 });
     }
   }
   if (item.extra === 'emergency') {
@@ -266,6 +284,54 @@ export function generateScenario(item: TestItem): Scenario {
   }
   if (!item.tram && item.extra === 'none') throw new Error(`Nelze vygenerovat křižovatku typu ${item.type}`);
   return generateScenario({ ...item, tram: false, extra: 'none' });
+}
+
+/** Real junction from the map: its layout and the player's way are fixed, the traffic is random. */
+export interface FixedJunction {
+  /** Without a signal plan – the phases are unknown and get drawn for every pass. */
+  intersection: Intersection;
+  hasSignals: boolean;
+  playerTo: Arm;
+  noEntry: Arm[];
+  noExit: Arm[];
+}
+
+export function generateScenarioFor(fixed: FixedJunction, seed: number): Scenario {
+  const rng = new Rng(seed);
+  const base = fixed.intersection;
+  const extras: Extra[] = base.roundabout
+    ? ['none']
+    : ['none', 'none', 'column', 'emergency', ...(base.crosswalks.length ? (['pedestrian'] as Extra[]) : [])];
+  let fallback: Scenario | null = null;
+  for (let attempt = 0; attempt < 900; attempt++) {
+    const simple = attempt >= 600;
+    const blinking = base.mainArms.length > 0 && rng.chance(0.15);
+    const intersection: Intersection = {
+      ...base,
+      signals: fixed.hasSignals ? buildSignalPlan(rng, base.arms, blinking) : null,
+    };
+    const vehicles = buildVehicles(rng, intersection, {
+      tram: !simple && base.tramLine !== null && rng.chance(0.6),
+      extra: simple ? 'none' : rng.pick(extras),
+      playerTo: fixed.playerTo,
+      noEntry: fixed.noEntry,
+      noExit: fixed.noExit,
+    });
+    const control = controlOf(intersection);
+    const startPhase = control ? settlePhase(intersection, vehicles, rng.int(control.phases.length)) : 0;
+    if (
+      !allConflictsDecided(intersection, vehicles) ||
+      !isSolvable(intersection, vehicles, startPhase) ||
+      !ringClear(intersection, vehicles, startPhase)
+    ) {
+      continue;
+    }
+    const scenario = { intersection, vehicles, startPhase, difficulty: difficultyOf(intersection, vehicles) };
+    if (hasAnyYield(intersection, vehicles, startPhase)) return scenario;
+    fallback ??= scenario;
+  }
+  if (fallback) return fallback;
+  throw new Error(`Nelze vygenerovat situaci pro křižovatku ${base.label}`);
 }
 
 function makeItem(rng: Rng, type: IntersectionType, seed: number, tram: boolean): TestItem {

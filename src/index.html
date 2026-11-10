@@ -32,6 +32,23 @@
         <button id="btn-go" class="btn primary" type="button" disabled>Jeďte</button>
       </div>
     </main>
+    <div id="map-view" class="map-view hidden">
+      <div id="map" class="map"></div>
+      <div class="map-panel">
+        <button id="btn-drive" class="btn primary" type="button" disabled>Start</button>
+        <label
+          >Rychlost
+          <select id="map-speed">
+            <option value="1">1×</option>
+            <option value="2" selected>2×</option>
+            <option value="4">4×</option>
+            <option value="8">8×</option>
+          </select>
+        </label>
+        <span id="map-status" aria-live="polite"></span>
+        <button id="btn-osm-retry" class="btn small hidden" type="button">Zkusit znovu</button>
+      </div>
+    </div>
     <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div id="modal-box" class="modal-box">
         <h2 id="modal-title"></h2>

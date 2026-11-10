@@ -37,5 +37,8 @@
   },
   "allowScripts": {
     "fsevents": false
+  },
+  "dependencies": {
+    "maplibre-gl": "^6.17.0"
   }
 }

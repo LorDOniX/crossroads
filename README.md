@@ -1,8 +1,9 @@
 # Přednost v jízdě – křižovatky
 
 Webová hra na procvičování přednosti v jízdě podle zákona č. 361/2000 Sb. Na náhodně vygenerované křižovatce
-(pohled shora) označíš všechny účastníky provozu, kteří smějí jet současně – včetně svého červeného auta – a potvrdíš
-tlačítkem „Jeďte“. Pak pokračuješ další skupinou, dokud křižovatkou neprojedou všichni.
+(pohled shora) určíš pořadí, v jakém projedou všichni účastníci provozu včetně tvého červeného auta – klikáš postupně
+na toho, kdo smí jet. S přepínačem „Více možností současně“ (v menu, výchozí vypnuto) označíš všechny, kdo smějí jet
+současně, a potvrdíš tlačítkem „Jeďte“.
 
 ## Herní režimy
 
@@ -23,7 +24,7 @@ Test lze sdílet odkazem – zadání se generuje deterministicky ze seedu: `?mo
 - řízení policistou, kruhové objezdy (s i bez „Dej přednost v jízdě!“ na vjezdu),
 - osobní a nákladní auta, tramvaje, sanitka s majákem, chodci na přechodech, kolony vozidel.
 
-Ovládání myší, dotykem i klávesnicí (Tab + Enter/mezerník označí vozidlo, pak Tab na „Jeďte“). Veškerá grafika je SVG generované v kódu, žádné externí
+Ovládání myší, dotykem i klávesnicí (Tab + Enter/mezerník vybere vozidlo, ve skupinovém režimu pak Tab na „Jeďte“). Veškerá grafika je SVG generované v kódu, žádné externí
 obrázky.
 
 ## Vývoj
@@ -39,6 +40,11 @@ npm run lint
 npm run format     # prettier
 npm run build      # statický web do dist/
 ```
+
+Mapa s trasou (menu → „Trasa na mapě“) bere klíč k REST API Mapy.com ze souboru `.env.json` (není v gitu):
+`{ "apiKey": "…" }`. Klíč se při buildu vloží do JS, proto má mít v účtu Mapy.com omezení na povolené domény.
+Křižovatky na trase se hledají v datech OpenStreetMap (Overpass API, `src/route/junctions.ts`); po „Start“ jede
+červené auto po trase a před každou křižovatkou zastaví a nabídne ji k řešení.
 
 ## Nahrání na server
 

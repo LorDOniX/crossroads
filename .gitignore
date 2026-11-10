@@ -2,3 +2,5 @@ node_modules/
 dist/
 # pristup na FTP (npm run upload)
 /conf
+.env
+.env.json

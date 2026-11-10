@@ -58,3 +58,59 @@ export function recordGame(record: GameRecord): void {
 export function resetStats(): void {
   save(empty());
 }
+
+const SETTINGS_KEY = 'crossroads-settings-v1';
+
+export interface Settings {
+  /** Select everybody who may go at once and confirm, instead of clicking road users one by one. */
+  multiSelect: boolean;
+}
+
+export function loadSettings(): Settings {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '') as Partial<Settings>;
+    return { multiSelect: parsed.multiSelect === true };
+  } catch {
+    return { multiSelect: false };
+  }
+}
+
+export function saveSettings(settings: Settings): void {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+// bump the version when the junction detection changes
+const ROUTES_KEY = 'crossroads-routes-v1';
+const ROUTES_SIZE = 10;
+
+/** Short key of a route string (FNV-1a). */
+export function routeCacheKey(route: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < route.length; i++) h = Math.imul(h ^ route.charCodeAt(i), 0x01000193);
+  return `${(h >>> 0).toString(36)}-${route.length}`;
+}
+
+function loadRoutes(): Record<string, unknown> {
+  try {
+    return (JSON.parse(localStorage.getItem(ROUTES_KEY) ?? '') as Record<string, unknown>) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** Data computed for a route (its junctions), so that OpenStreetMap is asked only once. */
+export function loadRouteData<T>(key: string): T | null {
+  return (loadRoutes()[key] as T | undefined) ?? null;
+}
+
+export function saveRouteData(key: string, data: unknown): void {
+  const routes = loadRoutes();
+  delete routes[key];
+  routes[key] = data;
+  for (const old of Object.keys(routes).slice(0, -ROUTES_SIZE)) delete routes[old];
+  try {
+    localStorage.setItem(ROUTES_KEY, JSON.stringify(routes));
+  } catch {
+    // full storage only costs another download next time
+  }
+}

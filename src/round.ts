@@ -45,8 +45,20 @@ export class RoundPlayer {
     private readonly svg: SVGSVGElement,
     readonly scenario: Scenario,
     private readonly callbacks: RoundCallbacks,
+    /** False: a click sends the road user at once; true: a group is selected and confirmed. */
+    private multiSelect = true,
   ) {
     this.reset(true);
+  }
+
+  get isMultiSelect(): boolean {
+    return this.multiSelect;
+  }
+
+  setMultiSelect(value: boolean): void {
+    this.multiSelect = value;
+    this.clearSelection();
+    this.callbacks.onProgress();
   }
 
   private reset(interactive: boolean): void {
@@ -80,6 +92,12 @@ export class RoundPlayer {
     const vehicle = this.remaining.find((v) => v.id === id);
     const view = this.scene.views.get(id);
     if (!vehicle || !view) return;
+    if (!this.multiSelect) {
+      this.selected.clear();
+      this.selected.add(vehicle);
+      void this.confirm();
+      return;
+    }
     if (this.selected.has(vehicle)) this.selected.delete(vehicle);
     else this.selected.add(vehicle);
     view.node.classList.toggle('selected', this.selected.has(vehicle));
@@ -87,7 +105,10 @@ export class RoundPlayer {
     this.callbacks.onProgress();
   }
 
-  /** Sends the selected group, or ends the round when it is not exactly the set of those who may go now. */
+  /**
+   * Sends the selected group, or ends the round when it is not exactly the set of those who may go now.
+   * A single road user is right whenever it may go now, even if others may go with it.
+   */
   async confirm(): Promise<void> {
     if (!this.canConfirm) return;
     const chosen = this.remaining.filter((v) => this.selected.has(v));
@@ -99,7 +120,7 @@ export class RoundPlayer {
     const wrong = chosen
       .filter((v) => !allowed.includes(v))
       .map((vehicle) => ({ vehicle, blockers: blockersOf(this.inter, vehicle, this.remaining, this.phase) }));
-    const missing = allowed.filter((v) => !chosen.includes(v));
+    const missing = this.multiSelect ? allowed.filter((v) => !chosen.includes(v)) : [];
     if (!wrong.length && !missing.length) {
       await this.departGroup(chosen);
       if (this.finished) return;

@@ -1,5 +1,11 @@
+const fs = require('fs');
 const path = require('path');
+const { DefinePlugin } = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+
+// .env.json (není v gitu): { "apiKey": "klíč k Mapy.com REST API" }
+const envFile = path.resolve(__dirname, '.env.json');
+const env = fs.existsSync(envFile) ? JSON.parse(fs.readFileSync(envFile, 'utf8')) : {};
 
 module.exports = (_env, argv) => ({
   entry: './src/main.ts',
@@ -19,8 +25,13 @@ module.exports = (_env, argv) => ({
       { test: /\.css$/, use: ['style-loader', 'css-loader'] },
     ],
   },
-  plugins: [new HtmlWebpackPlugin({ template: './src/index.html' })],
+  plugins: [
+    new HtmlWebpackPlugin({ template: './src/index.html' }),
+    new DefinePlugin({ MAPY_API_KEY: JSON.stringify(env.apiKey ?? '') }),
+  ],
   devtool: argv.mode === 'development' ? 'eval-source-map' : false,
+  // worker URL of maplibre-gl is set explicitly in src/route/mapView.ts
+  ignoreWarnings: [{ module: /maplibre-gl\.mjs$/, message: /Critical dependency/ }],
   devServer: {
     port: 8080,
     open: true,
