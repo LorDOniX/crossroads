@@ -80,7 +80,7 @@ export function saveSettings(settings: Settings): void {
 }
 
 // bump the version when the junction detection changes
-const ROUTES_KEY = 'crossroads-routes-v1';
+const ROUTES_KEY = 'crossroads-routes-v2';
 const ROUTES_SIZE = 10;
 
 /** Short key of a route string (FNV-1a). */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateScenarioFor, type FixedJunction } from '../src/generator';
-import { findJunctions } from '../src/route/junctions';
+import { findJunctions, findSites, junctionsOnRoute, type JunctionSite } from '../src/route/junctions';
 import type { OsmData, OsmNode, Tags } from '../src/route/osm';
 import { createRoute, type LonLat } from '../src/route/route';
 import { isSolvable } from '../src/rules';
@@ -132,8 +132,76 @@ describe('křižovatky na trase', () => {
     expect(junctions[0].fixed.playerTo).toBe(2);
   });
 
+  it('oba jízdní pásy rozdělené silnice jsou jedno rameno', () => {
+    const nodes: Record<number, [number, number, Tags?]> = {
+      ...CROSS_NODES,
+      30: [-8, -20],
+      32: [-8, -100],
+      31: [8, -20],
+      33: [8, -100],
+    };
+    const ways: [number[], Tags][] = [
+      [[1, 4, 5], { highway: 'tertiary', name: 'Severní' }],
+      [[7, 6, 1], { highway: 'tertiary', name: 'Východní' }],
+      [[1, 8, 9], { highway: 'tertiary', name: 'Západní' }],
+      [[1, 30, 32], { highway: 'tertiary', name: 'Jižní', oneway: 'yes' }],
+      [[33, 31, 1], { highway: 'tertiary', name: 'Jižní', oneway: 'yes' }],
+    ];
+    const [junction] = findJunctions(route([0, -100], [0, 100]), osm(nodes, ways));
+    expect(junction.fixed.intersection.arms).toEqual([0, 1, 2, 3]);
+    expect(junction.fixed.noEntry).toEqual([]);
+    expect(junction.fixed.noExit).toEqual([]);
+  });
+
+  it('křižovatka hned u kruhového objezdu zůstane samostatná', () => {
+    const nodes: Record<number, [number, number, Tags?]> = {
+      1: [0, -15],
+      2: [15, 0],
+      3: [0, 15],
+      4: [-15, 0],
+      5: [0, -35],
+      6: [0, -100],
+      7: [-100, -35],
+    };
+    const ways: [number[], Tags][] = [
+      [[1, 2, 3, 4, 1], { highway: 'residential', junction: 'roundabout' }],
+      [[6, 5, 1], { highway: 'residential' }],
+      [[5, 7], { highway: 'residential' }],
+    ];
+    const [junction] = findJunctions(route([0, -100], [0, -35], [-100, -35]), osm(nodes, ways));
+    expect(junction.fixed.intersection.roundabout).toBeNull();
+    expect(junction.fixed.intersection.arms).toEqual([0, 2, 3]);
+    expect(junction.fixed.playerTo).toBe(3);
+  });
+
+  it('křižovatka s šesti rameny se nakreslí jako kříž', () => {
+    const nodes: Record<number, [number, number, Tags?]> = { 1: [0, 0] };
+    const ways: [number[], Tags][] = [0, 45, 90, 180, 270, 315].map((deg, i) => {
+      const rad = (deg * Math.PI) / 180;
+      nodes[10 + i] = [100 * Math.sin(rad), 100 * Math.cos(rad)];
+      return [[1, 10 + i], { highway: 'residential' }];
+    });
+    const [junction] = findJunctions(route([0, -100], [0, 100]), osm(nodes, ways));
+    expect(junction.fixed.intersection.arms).toEqual([0, 1, 2, 3]);
+    expect(junction.fixed.playerTo).toBe(2);
+  });
+
   it('ignoruje křižovatku mimo trasu', () => {
     expect(findJunctions(route([30, -100], [30, 100]), osm(CROSS_NODES, crossWays()))).toHaveLength(0);
+  });
+
+  it('tramvajová trať přes křižovatku', () => {
+    const nodes: Record<number, [number, number, Tags?]> = { ...CROSS_NODES, 20: [2, -100], 21: [2, 0], 22: [2, 100] };
+    const ways: [number[], Tags][] = [...crossWays(), [[20, 21, 22], { railway: 'tram' }]];
+    const [junction] = findJunctions(route([0, -100], [0, 100]), osm(nodes, ways));
+    expect(junction.fixed.intersection.tramLine).toEqual([0, 2]);
+  });
+
+  it('offline data (JSON) dají stejné křižovatky', () => {
+    const data = osm(CROSS_NODES, crossWays());
+    const r = route([0, -100], [0, 0], [100, 0]);
+    const sites = JSON.parse(JSON.stringify(findSites(data))) as JunctionSite[];
+    expect(junctionsOnRoute(r, sites)).toEqual(findJunctions(r, data));
   });
 });
 

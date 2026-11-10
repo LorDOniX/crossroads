@@ -15,7 +15,8 @@
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,css,html}\" \"tests/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.{ts,css,html}\" \"tests/**/*.ts\"",
-    "upload": "npm run build && tsx scripts/upload.ts"
+    "upload": "npm run build && tsx scripts/upload.ts",
+    "junctions:brno": "tsx scripts/offline-junctions.ts Brno"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",

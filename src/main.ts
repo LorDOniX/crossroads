@@ -13,8 +13,9 @@ import {
 import { deriveSeed, randomSeed } from './random';
 import { RoundPlayer, type Mistake } from './round';
 import type { RouteDrive } from './route/drive';
-import { findJunctions, type RouteJunction } from './route/junctions';
+import { findJunctions, junctionsOnRoute, type RouteJunction } from './route/junctions';
 import type { JunctionState, RouteMap } from './route/mapView';
+import { loadOfflineSites } from './route/offline';
 import { fetchOsm } from './route/osm';
 import { createRoute, type Route } from './route/route';
 import type { Blocker } from './rules';
@@ -533,21 +534,29 @@ function finishRide(current: Ride): void {
   });
 }
 
+async function findRouteJunctions(current: Ride): Promise<RouteJunction[]> {
+  const sites = await loadOfflineSites(current.route, current.abort.signal);
+  if (sites) return junctionsOnRoute(current.route, sites);
+  const cacheKey = routeCacheKey(current.mirek);
+  const cached = loadRouteData<RouteJunction[]>(cacheKey);
+  if (cached) return cached;
+  mapStatus.textContent = 'Hledám křižovatky v OpenStreetMap… Auto už může jet.';
+  const junctions = findJunctions(current.route, await fetchOsm(current.route, current.abort.signal));
+  saveRouteData(cacheKey, junctions);
+  return junctions;
+}
+
 async function loadJunctions(current: Ride): Promise<void> {
   retryButton.classList.add('hidden');
-  const cacheKey = routeCacheKey(current.mirek);
-  let junctions = loadRouteData<RouteJunction[]>(cacheKey);
-  if (!junctions) {
-    mapStatus.textContent = 'Hledám křižovatky v OpenStreetMap… Auto už může jet.';
-    try {
-      junctions = findJunctions(current.route, await fetchOsm(current.route, current.abort.signal));
-      saveRouteData(cacheKey, junctions);
-    } catch (error) {
-      if (ride !== current) return;
-      mapStatus.textContent = `Křižovatky se nepodařilo načíst: ${errorText(error)}.`;
-      retryButton.classList.remove('hidden');
-      return;
-    }
+  mapStatus.textContent = 'Načítám křižovatky…';
+  let junctions: RouteJunction[];
+  try {
+    junctions = await findRouteJunctions(current);
+  } catch (error) {
+    if (ride !== current) return;
+    mapStatus.textContent = `Křižovatky se nepodařilo načíst: ${errorText(error)}.`;
+    retryButton.classList.remove('hidden');
+    return;
   }
   if (ride !== current) return;
   current.junctions = junctions;

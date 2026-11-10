@@ -28,6 +28,20 @@ interface RealArm {
   names: string[];
 }
 
+/** Junction found in OSM data, independent of any route – the content of the offline files. */
+export interface JunctionSite {
+  /** Smallest OSM node id of the junction. */
+  id: number;
+  center: LonLat;
+  /** Junction nodes; the route drives through the junction where it comes close to one of them. */
+  nodes: LonLat[];
+  arms: RealArm[];
+  roundabout: boolean;
+  signals: boolean;
+  /** Bearings of tram tracks leaving the junction. */
+  trams: number[];
+}
+
 interface GameArm {
   real: RealArm;
   slot: Arm;
@@ -43,6 +57,8 @@ const ARM_POINT = 20;
 const ARM_TAGS = 30;
 /** Arms closer than this angle are one arm (both carriageways of a divided road). */
 const MERGE_ARMS = 25;
+/** The two one-way carriageways of one road may diverge this much at the junction mouth. */
+const MERGE_CARRIAGEWAYS = 60;
 /** Max angle between the route and the arm it uses. */
 const MATCH_ROUTE = 40;
 /** Max angle between a real arm and the game arm it is drawn as. */
@@ -66,6 +82,28 @@ const RANK: Record<string, number> = {
 const SLOT_ANGLE: Record<1 | 2 | 3, number> = { 1: 270, 2: 180, 3: 90 };
 
 const pos = (n: OsmNode): LonLat => [n.lon, n.lat];
+/** Grid cell in degrees, at least CLUSTER metres in both directions. */
+const CELL = 0.0005;
+
+/** Items within one grid cell around a point (cheap first filter before measuring distances). */
+function gridOf<T>(items: readonly T[], at: (item: T) => LonLat): (p: LonLat) => T[] {
+  const cells = new Map<string, T[]>();
+  for (const item of items) {
+    const [lon, lat] = at(item);
+    const key = `${Math.floor(lon / CELL)},${Math.floor(lat / CELL)}`;
+    const cell = cells.get(key);
+    if (cell) cell.push(item);
+    else cells.set(key, [item]);
+  }
+  return ([lon, lat]) => {
+    const x = Math.floor(lon / CELL);
+    const y = Math.floor(lat / CELL);
+    const result: T[] = [];
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++) result.push(...(cells.get(`${x + dx},${y + dy}`) ?? []));
+    return result;
+  };
+}
 const rankOf = (tags: Tags | undefined): number | undefined => RANK[(tags?.highway ?? '').replace(/_link$/, '')];
 const isRoad = (way: OsmWay): boolean =>
   rankOf(way.tags) !== undefined && !['no', 'private'].includes(way.tags?.access ?? '') && way.tags?.area !== 'yes';
@@ -127,26 +165,43 @@ function walkArm(data: OsmData, way: OsmWay, index: number, dir: -1 | 1, center:
     if (tags?.highway === 'crossing' && tags.crossing !== 'no' && tags.crossing !== 'unmarked') arm.crossing = true;
     if (isSignal(tags)) arm.signals = true;
   });
-  arm.bearing = bearing(center, point);
+  arm.bearing = Math.round(bearing(center, point) * 10) / 10;
   return arm;
 }
+
+/** One carriageway leads into the junction and the other out of it, both of the same road. */
+const carriageways = (a: RealArm, b: RealArm): boolean =>
+  a.canEnter !== a.canExit &&
+  b.canEnter !== b.canExit &&
+  a.canEnter === b.canExit &&
+  (a.names.some((name) => b.names.includes(name)) || (!a.names.length && !b.names.length));
+
+/** Adds `arm` to `into`: the direction ends up halfway, the attributes are combined. */
+function absorb(into: RealArm, arm: RealArm): void {
+  const diff = ((((arm.bearing - into.bearing) % 360) + 540) % 360) - 180;
+  into.bearing = Math.round(((((into.bearing + diff / 2) % 360) + 360) % 360) * 10) / 10;
+  into.rank = Math.max(into.rank, arm.rank);
+  into.priority ||= arm.priority;
+  into.sign = into.sign === 'stop' || arm.sign === 'stop' ? 'stop' : (into.sign ?? arm.sign);
+  into.crossing ||= arm.crossing;
+  into.signals ||= arm.signals;
+  into.canEnter ||= arm.canEnter;
+  into.canExit ||= arm.canExit;
+  for (const name of arm.names) if (!into.names.includes(name)) into.names.push(name);
+}
+
+const copyArm = (arm: RealArm): RealArm => ({ ...arm, names: [...arm.names] });
 
 function mergeArms(arms: readonly RealArm[]): RealArm[] {
   const merged: RealArm[] = [];
   for (const arm of arms) {
-    const same = merged.find((m) => angleDiff(m.bearing, arm.bearing) < MERGE_ARMS);
-    if (!same) {
-      merged.push({ ...arm, names: [...arm.names] });
-      continue;
-    }
-    same.rank = Math.max(same.rank, arm.rank);
-    same.priority ||= arm.priority;
-    same.sign = same.sign === 'stop' || arm.sign === 'stop' ? 'stop' : (same.sign ?? arm.sign);
-    same.crossing ||= arm.crossing;
-    same.signals ||= arm.signals;
-    same.canEnter ||= arm.canEnter;
-    same.canExit ||= arm.canExit;
-    for (const name of arm.names) if (!same.names.includes(name)) same.names.push(name);
+    const same = merged.find(
+      (m) =>
+        angleDiff(m.bearing, arm.bearing) < MERGE_ARMS ||
+        (angleDiff(m.bearing, arm.bearing) < MERGE_CARRIAGEWAYS && carriageways(m, arm)),
+    );
+    if (same) absorb(same, arm);
+    else merged.push(copyArm(arm));
   }
   return merged;
 }
@@ -204,35 +259,15 @@ function mainRoad(arms: readonly GameArm[]): { main: Arm[]; estimated: boolean }
   return { main: [], estimated: true };
 }
 
-function tramLineOf(
-  data: OsmData,
-  trams: readonly OsmWay[],
-  center: LonLat,
-  arms: readonly GameArm[],
-): [Arm, Arm] | null {
+function tramLineOf(trams: readonly number[], arms: readonly GameArm[]): [Arm, Arm] | null {
   const slots = new Set<Arm>();
-  for (const way of trams) {
-    let nearest = -1;
-    let nearestDist = CLUSTER;
-    way.nodes.forEach((id, i) => {
-      const node = data.nodes.get(id);
-      const d = node ? distance(center, pos(node)) : Infinity;
-      if (d < nearestDist) {
-        nearest = i;
-        nearestDist = d;
-      }
-    });
-    if (nearest < 0) continue;
-    for (const dir of [-1, 1] as const) {
-      const end = walkWay(data, way, nearest, dir, ARM_TAGS, ARM_TAGS);
-      if (end.travelled < ARM_POINT) continue;
-      const arm = closestArm(
-        arms.map((a) => ({ bearing: a.real.bearing, slot: a.slot })),
-        bearing(center, end.point),
-        MATCH_ROUTE,
-      );
-      if (arm) slots.add(arm.slot);
-    }
+  for (const direction of trams) {
+    const arm = closestArm(
+      arms.map((a) => ({ bearing: a.real.bearing, slot: a.slot })),
+      direction,
+      MATCH_ROUTE,
+    );
+    if (arm) slots.add(arm.slot);
   }
   const list = [...slots];
   if (list.length < 2) return null;
@@ -240,37 +275,75 @@ function tramLineOf(
   return straight !== undefined ? [straight, ((straight + 2) % 4) as Arm] : [list[0], list[1]];
 }
 
-interface Cluster {
-  id: number;
-  center: LonLat;
-  arms: RealArm[];
-  roundabout: boolean;
-  signals: boolean;
-  tramLine: (arms: readonly GameArm[]) => [Arm, Arm] | null;
+function tramBearings(data: OsmData, near: { way: OsmWay; index: number }[], center: LonLat): number[] {
+  const nearest = new Map<OsmWay, { index: number; dist: number }>();
+  for (const { way, index } of near) {
+    const node = data.nodes.get(way.nodes[index]);
+    const dist = node ? distance(center, pos(node)) : Infinity;
+    if (dist < CLUSTER && dist < (nearest.get(way)?.dist ?? Infinity)) nearest.set(way, { index, dist });
+  }
+  const bearings: number[] = [];
+  for (const [way, { index }] of nearest) {
+    for (const dir of [-1, 1] as const) {
+      const end = walkWay(data, way, index, dir, ARM_TAGS, ARM_TAGS);
+      if (end.travelled < ARM_POINT) continue;
+      const direction = Math.round(bearing(center, end.point) * 10) / 10;
+      if (!bearings.some((b) => angleDiff(b, direction) < MERGE_ARMS)) bearings.push(direction);
+    }
+  }
+  return bearings;
 }
 
-function junctionOnPass(route: Route, cluster: Cluster, sMin: number, sMax: number): RouteJunction | null {
-  const { center, arms } = cluster;
+/** A junction with more than four arms drawn as a cross: arms on the same side are joined into one. */
+function groupBySides(
+  entry: RealArm,
+  others: readonly RealArm[],
+  exit: RealArm,
+): { game: GameArm[]; playerTo: Arm } | null {
+  const sides: (RealArm | null)[] = [copyArm(entry), null, null, null];
+  let playerTo: Arm = 0;
+  for (const arm of others) {
+    const rel = (arm.bearing - entry.bearing + 360) % 360;
+    const side = ((4 - Math.round(rel / 90)) % 4) as Arm;
+    if (arm === exit) playerTo = side;
+    const into = sides[side];
+    if (into) absorb(into, arm);
+    else sides[side] = copyArm(arm);
+  }
+  const game = sides.flatMap((real, slot) => (real ? [{ real, slot: slot as Arm }] : []));
+  return playerTo !== 0 && game.length >= 3 ? { game, playerTo } : null;
+}
+
+function junctionOnPass(route: Route, site: JunctionSite, sMin: number, sMax: number): RouteJunction | null {
+  const { center, arms } = site;
   if (sMin < STOP_BEFORE + 10 || sMax + 25 > route.length) return null;
   const entry = closestArm(arms, bearing(center, pointAt(route, sMin - 25).point), MATCH_ROUTE);
   const exit = closestArm(arms, bearing(center, pointAt(route, sMax + 25).point), MATCH_ROUTE);
   if (!entry || !exit || entry === exit) return null;
   const others = arms.filter((a) => a !== entry);
-  if (others.length < 2 || others.length > 3) return null;
-  const slots = assignSlots(others.map((a) => (a.bearing - entry.bearing + 360) % 360));
-  if (!slots) return null;
-  const game: GameArm[] = [{ real: entry, slot: 0 }, ...others.map((real, i) => ({ real, slot: slots[i] }))];
-  const playerTo = (game.find((g) => g.real === exit) as GameArm).slot;
+  if (others.length < 2) return null;
+  let game: GameArm[];
+  let playerTo: Arm;
+  if (others.length <= 3) {
+    const slots = assignSlots(others.map((a) => (a.bearing - entry.bearing + 360) % 360));
+    if (!slots) return null;
+    game = [{ real: entry, slot: 0 }, ...others.map((real, i) => ({ real, slot: slots[i] }))];
+    playerTo = (game.find((g) => g.real === exit) as GameArm).slot;
+  } else {
+    const grouped = groupBySides(entry, others, exit);
+    if (!grouped) return null;
+    ({ game, playerTo } = grouped);
+  }
 
-  const roundabout = cluster.roundabout;
-  const hasSignals = !roundabout && (cluster.signals || arms.some((a) => a.signals));
+  const roundabout = site.roundabout;
+  const hasSignals = !roundabout && (site.signals || arms.some((a) => a.signals));
   const { main, estimated } = roundabout ? { main: [], estimated: false } : mainRoad(game);
   const names = [...new Set(game.flatMap((g) => g.real.names))];
   const intersection: Intersection = {
     arms: game.map((g) => g.slot).sort((a, b) => a - b),
     mainArms: main,
     yieldSign: game.some((g) => g.real.sign === 'stop') ? 'stop' : 'giveWay',
-    tramLine: roundabout ? null : cluster.tramLine(game),
+    tramLine: roundabout ? null : tramLineOf(site.trams, game),
     signals: null,
     police: null,
     roundabout: roundabout ? { yieldOnEntry: true } : null,
@@ -279,7 +352,7 @@ function junctionOnPass(route: Route, cluster: Cluster, sMin: number, sMax: numb
     label: names.slice(0, 3).join(' × ') || 'Křižovatka bez názvu',
   };
   return {
-    id: cluster.id,
+    id: site.id,
     center,
     at: Math.max(0, sMin - STOP_BEFORE),
     label: intersection.label,
@@ -294,11 +367,10 @@ function junctionOnPass(route: Route, cluster: Cluster, sMin: number, sMax: numb
   };
 }
 
-/** Junctions the route drives through, in the order of driving; a junction passed twice is listed twice. */
-export function findJunctions(route: Route, data: OsmData): RouteJunction[] {
+/** All junctions in the OSM data with at least three arms; more than four are joined into a cross for each pass. */
+export function findSites(data: OsmData): JunctionSite[] {
   const roads = data.ways.filter(isRoad);
   const rings = roads.filter(isRing);
-  const trams = data.ways.filter((w) => w.tags?.railway === 'tram');
   const nodeOf = (id: number): OsmNode => data.nodes.get(id) as OsmNode;
 
   const refs = new Map<number, { way: OsmWay; index: number }[]>();
@@ -315,7 +387,7 @@ export function findJunctions(route: Route, data: OsmData): RouteJunction[] {
       (sum, { way, index }) => sum + (index > 0 ? 1 : 0) + (index < way.nodes.length - 1 ? 1 : 0),
       0,
     );
-  const candidates = [...refs.keys()].filter((id) => degree(id) >= 3);
+  const candidates = [...refs.keys()].filter((id) => degree(id) >= 3).map(nodeOf);
 
   const parent = new Map<number, number>();
   const find = (id: number): number => {
@@ -330,26 +402,30 @@ export function findJunctions(route: Route, data: OsmData): RouteJunction[] {
     const rb = find(b);
     if (ra !== rb) parent.set(ra, rb);
   };
-  for (let i = 0; i < candidates.length; i++) {
-    const a = nodeOf(candidates[i]);
-    for (let j = i + 1; j < candidates.length; j++) {
-      const b = nodeOf(candidates[j]);
-      if (Math.abs(a.lat - b.lat) < 0.0005 && distance(pos(a), pos(b)) < CLUSTER) union(a.id, b.id);
+  const nearCandidates = gridOf(candidates, pos);
+  // a junction next to a roundabout stays a junction of its own
+  const ringNodes = new Set(rings.flatMap((ring) => ring.nodes));
+  for (const a of candidates) {
+    for (const b of nearCandidates(pos(a))) {
+      if (b.id > a.id && ringNodes.has(a.id) === ringNodes.has(b.id) && distance(pos(a), pos(b)) < CLUSTER) {
+        union(a.id, b.id);
+      }
     }
   }
   for (const ring of rings) for (const id of ring.nodes) union(id, ring.nodes[0]);
 
   const groups = new Map<number, number[]>();
-  for (const id of candidates) groups.set(find(id), [...(groups.get(find(id)) ?? []), id]);
+  for (const { id } of candidates) groups.set(find(id), [...(groups.get(find(id)) ?? []), id]);
 
-  const result: RouteJunction[] = [];
+  const tramNodes = data.ways
+    .filter((w) => w.tags?.railway === 'tram')
+    .flatMap((way) => way.nodes.map((id, index) => ({ way, index, node: data.nodes.get(id) })))
+    .filter((t): t is { way: OsmWay; index: number; node: OsmNode } => t.node !== undefined);
+  const nearTrams = gridOf(tramNodes, (t) => pos(t.node));
+
+  const sites: JunctionSite[] = [];
   for (const group of groups.values()) {
     const members = new Set(group);
-    const passes = group
-      .flatMap((id) => nearPasses(route, pos(nodeOf(id)), NEAR).map((p) => p.along))
-      .sort((a, b) => a - b);
-    if (!passes.length) continue;
-
     const ringWays = rings.filter((w) => w.nodes.some((id) => members.has(id)));
     const centerIds = ringWays.length ? [...new Set(ringWays.flatMap((w) => w.nodes))] : group;
     const centerNodes = centerIds.filter((id) => data.nodes.has(id)).map(nodeOf);
@@ -369,22 +445,44 @@ export function findJunctions(route: Route, data: OsmData): RouteJunction[] {
         ),
       ),
     );
-    const cluster: Cluster = {
+    if (arms.length < 3) continue;
+    sites.push({
       id: Math.min(...group),
       center,
+      nodes: group.map((id) => pos(nodeOf(id))),
       arms,
       roundabout: ringWays.length > 0,
       signals: group.some((id) => isSignal(nodeOf(id).tags)),
-      tramLine: (gameArms) => tramLineOf(data, trams, center, gameArms),
-    };
+      trams: tramBearings(data, nearTrams(center), center),
+    });
+  }
+  return sites;
+}
 
+/** Junctions the route drives through, in the order of driving; a junction passed twice is listed twice. */
+export function junctionsOnRoute(route: Route, sites: readonly JunctionSite[]): RouteJunction[] {
+  const lons = route.points.map((p) => p[0]);
+  const lats = route.points.map((p) => p[1]);
+  const margin = 0.001;
+  const [west, east] = [Math.min(...lons) - margin, Math.max(...lons) + margin];
+  const [south, north] = [Math.min(...lats) - margin, Math.max(...lats) + margin];
+
+  const result: RouteJunction[] = [];
+  for (const site of sites) {
+    const [lon, lat] = site.center;
+    if (lon < west || lon > east || lat < south || lat > north) continue;
+    const passes = site.nodes
+      .flatMap((p) => nearPasses(route, p, NEAR).map((pass) => pass.along))
+      .sort((a, b) => a - b);
     let start = 0;
     for (let i = 1; i <= passes.length; i++) {
       if (i < passes.length && passes[i] - passes[i - 1] < PASS_GAP) continue;
-      const junction = junctionOnPass(route, cluster, passes[start], passes[i - 1]);
+      const junction = junctionOnPass(route, site, passes[start], passes[i - 1]);
       if (junction) result.push(junction);
       start = i;
     }
   }
   return result.sort((a, b) => a.at - b.at);
 }
+
+export const findJunctions = (route: Route, data: OsmData): RouteJunction[] => junctionsOnRoute(route, findSites(data));

@@ -100,7 +100,53 @@ export class RouteMap {
     });
     this.map.addControl(new NavigationControl(), 'top-right');
     this.map.addControl(new MapyLogo(), 'bottom-left');
+    this.addContextMenu();
     this.loaded = new Promise((resolve) => this.map.once('load', () => resolve()));
+  }
+
+  /** Right click copies the coordinates of the point. */
+  private addContextMenu(): void {
+    const menu = document.createElement('div');
+    menu.className = 'map-menu hidden';
+    menu.setAttribute('role', 'menu');
+    this.map.getContainer().append(menu);
+    const close = (): void => menu.classList.add('hidden');
+    this.map.on('contextmenu', (e) => {
+      e.preventDefault();
+      const lat = e.lngLat.lat.toFixed(6);
+      const lon = e.lngLat.lng.toFixed(6);
+      const items: [string, string][] = [
+        [`${lat}, ${lon}`, 'zeměpisná šířka, délka'],
+        [`[${lon}, ${lat}]`, 'GeoJSON [lon, lat]'],
+      ];
+      menu.replaceChildren(
+        ...items.map(([text, hint]) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.setAttribute('role', 'menuitem');
+          button.textContent = `Kopírovat ${text}`;
+          const small = document.createElement('small');
+          small.textContent = hint;
+          button.append(small);
+          button.addEventListener('click', () => {
+            void navigator.clipboard?.writeText(text);
+            close();
+          });
+          return button;
+        }),
+      );
+      const { width, height } = this.map.getContainer().getBoundingClientRect();
+      menu.classList.remove('hidden');
+      menu.style.left = `${Math.min(e.point.x, width - menu.offsetWidth - 4)}px`;
+      menu.style.top = `${Math.min(e.point.y, height - menu.offsetHeight - 4)}px`;
+      (menu.firstElementChild as HTMLElement | null)?.focus();
+    });
+    this.map.on('click', close);
+    this.map.on('dragstart', close);
+    this.map.on('wheel', close);
+    menu.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close();
+    });
   }
 
   async showJunctions(junctions: readonly { center: LonLat; state: JunctionState }[]): Promise<void> {

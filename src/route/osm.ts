@@ -25,7 +25,7 @@ type Element = ({ type: 'node' } & OsmNode) | ({ type: 'way' } & OsmWay) | { typ
 type Box = [number, number, number, number];
 
 // the public instances are often overloaded – the next one starts when the previous one is slow or fails
-const ENDPOINTS = [
+export const ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
@@ -35,7 +35,7 @@ const STAGGER_MS = 6000;
 const REQUEST_MS = 45_000;
 const BUSY_RETRIES = 3;
 const BUSY_RETRY_MS = 2000;
-const ROADS = '^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)(_link)?$';
+export const ROADS = '^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)(_link)?$';
 /** Roads this close to the route are downloaded, in metres. */
 const CORRIDOR = 40;
 /** The route is covered by boxes around pieces of about this length, in metres. */

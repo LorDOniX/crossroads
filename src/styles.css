@@ -591,6 +591,42 @@ main.overlay #scene-wrap {
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5));
 }
 
+.map-menu {
+  position: absolute;
+  z-index: 3;
+  min-width: 220px;
+  padding: 4px 0;
+  border-radius: 6px;
+  background: #fff;
+  color: #1d2329;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+}
+
+.map-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.map-menu button:hover,
+.map-menu button:focus-visible {
+  background: #e9eef3;
+  outline: none;
+}
+
+.map-menu small {
+  display: block;
+  color: #6b7a88;
+  font-size: 11px;
+}
+
 .mapy-logo img {
   display: block;
   height: 30px;

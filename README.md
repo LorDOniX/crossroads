@@ -46,6 +46,10 @@ Mapa s trasou (menu → „Trasa na mapě“) bere klíč k REST API Mapy.com ze
 Křižovatky na trase se hledají v datech OpenStreetMap (Overpass API, `src/route/junctions.ts`); po „Start“ jede
 červené auto po trase a před každou křižovatkou zastaví a nabídne ji k řešení.
 
+Pro Brno jsou křižovatky předpočítané v `data/junctions-brno.json` (trasa celá v Brně se obejde bez Overpass API).
+Přegenerování z aktuálních dat OSM: `npm run junctions:brno` – stáhne silnice a tramvaje města (jeden dotaz, ~40 s) a
+vypíše bbox, který se přepíše do `src/route/offline.ts`.
+
 ## Nahrání na server
 
 - `npm run upload` - build a nahrání `dist/` na FTP do `/www/subdom/app/crossroads/` = https://app.makuderovi.cz/crossroads/ (`scripts/upload.ts`, stejně jako v repu todo)
