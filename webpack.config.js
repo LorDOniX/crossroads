@@ -23,6 +23,13 @@ module.exports = (_env, argv) => ({
     rules: [
       { test: /\.ts$/, use: 'ts-loader', exclude: /node_modules/ },
       { test: /\.css$/, use: ['style-loader', 'css-loader'] },
+      // worker of maplibre-gl as .js – the hosting (Apache on Wedos) serves .mjs without Content-Type
+      // and browsers refuse module scripts with a non-JavaScript MIME type
+      {
+        test: /maplibre-gl-worker\.mjs$/,
+        type: 'asset/resource',
+        generator: { filename: 'maplibre-worker.[contenthash].js' },
+      },
     ],
   },
   plugins: [
